@@ -1,4 +1,4 @@
-# Claude Code Brief v2.3 — OpenClaw Decommission + Hermes Agent (Streams A–E)
+# Claude Code Brief v2.4 — OpenClaw Decommission + Hermes Agent (Streams A–E)
 
 Supersedes `hermes-migration-brief-streams-AB.md` / `-CDE.md` (v1) and reconciles
 `plans/HermesCodex.md`. Rewritten 2026-06-12 after verifying all three documents against
@@ -11,15 +11,23 @@ speed** — fewest moving parts, fastest responses, full tools/skills/MCP capabi
 
 | Field | Value |
 |-------|-------|
-| Current version | v2.3 |
+| Current version | v2.4 |
 | Status | Post-execution final plan, retained as a tracked migration/audit artifact |
-| Last live validation | 2026-06-14 14:15 CDT |
+| Last live validation | 2026-06-14 14:20 CDT |
 | Source checkout | `/Volumes/BotCentral/Users/milo/repos/hermes-agent` |
 | Tracking branch | `codex/track-hermes-migration-plan` |
 | Upstream Hermes base | `7433d5f0eb22ae95c2aa5bd4cffa55df382573af` |
 | Hermes version | `Hermes Agent v0.16.0 (2026.6.5)` |
-| Runtime state | Hermes live; Telegram outbound delivery verified; OpenClaw removed; OpenHermes quarantined/inert |
+| Runtime state | Hermes live; Telegram outbound delivery verified; EA cron jobs active; OpenClaw removed; OpenHermes fully retired |
 | Remaining live gate | None for the approved Telegram DM channel |
+
+## What changed v2.3 → v2.4 (EA automation + final retirement)
+
+| Topic | v2.3 said | v2.4 says | Why |
+|-------|-----------|-----------|-----|
+| EA automations | Planned after Telegram went live | Two active Hermes cron jobs exist | `daily-telegram-briefing` runs at 07:00 daily; `sunday-system-audit` runs Sundays at 09:00, both delivered to Telegram. |
+| OpenHermes | Quarantined/inert pending later owner decision | Fully retired after owner approval | Final archives were written under `/Volumes/MiloCache/quarantine/openhermes/final-retire-20260614-141940/`, then original directories and the Downloads handoff doc were removed. |
+| Main branch | Migration plan tracked on `codex/track-hermes-migration-plan` | Plan branch is ready to merge into `main` | User approved merge after v2.4 updates. |
 
 ## What changed v2.2 → v2.3 (live-channel completion)
 
@@ -105,7 +113,7 @@ Phase 6 gate unchanged at the end.
 **Decisions — LOCKED by John, 2026-06-12:**
 
 1. **Remotes:** `origin` = NousResearch (upstream), `milo` = MiloTheAssistant fork. `hermes update` pulls upstream directly; fork is pushed explicitly.
-2. **OpenHermes:** quarantine (bootout, plist + archives to MiloCache quarantine, directories left in place, no deletion).
+2. **OpenHermes:** initially quarantined; fully retired after owner approval on 2026-06-14. Permanent archives stay under `/Volumes/MiloCache/quarantine/openhermes/`.
 3. **Workspace instructions:** NOT migrated — `--workspace-target` is never passed (verified: the migrate tool cleanly skips that category when the flag is absent). `~/repos/hermes-agent` remains the Hermes **source repo** (the install lives there); it is not the EA's workspace.
 
 -----
@@ -569,17 +577,26 @@ against current upstream: `init`/`create --assignee`/`list`/`stats` all real.)
 
 ### Step 2 — Scheduled automations (agent-native tasks only)
 
-In a `hermes` session, one at a time, confirming each registers:
+Completed via first-party `hermes cron create` on 2026-06-14:
 
-> Create a scheduled automation: every morning at 7:00 send me a briefing on
-> Telegram — today's calendar, open kanban tasks, and anything overdue.
+```bash
+hermes cron create --name daily-telegram-briefing --deliver telegram \
+  --workdir /Volumes/BotCentral/Users/milo/repos/hermes-agent \
+  '0 7 * * *' \
+  "Prepare a concise daily executive briefing for Milo and deliver it to Telegram. Include today's calendar if available, open Hermes kanban tasks, anything overdue, and the top actionable priorities for the day. Keep it short and operational."
 
-> Create a scheduled automation: every Sunday at 09:00 run a system audit — disk
-> usage on BotCentral and MiloCache, docker container health, gateway launchd
-> status — and send the report to Telegram.
+hermes cron create --name sunday-system-audit --deliver telegram \
+  --workdir /Volumes/BotCentral/Users/milo/repos/hermes-agent \
+  '0 9 * * 0' \
+  "Run a concise Sunday system audit and deliver it to Telegram. Check disk usage on BotCentral and MiloCache, Docker container health, Hermes gateway launchd status, Hermes backup status, OpenClaw/OpenHermes inactive state, local Ollama exposure on port 11434, and summarize any action needed."
+```
 
-The nightly backup is deliberately NOT an agent automation — Step 3. If an instruction
-fails to register, capture Hermes's exact response, adapt phrasing, document.
+Registered jobs:
+
+- `fc7f6fe27187` — `daily-telegram-briefing`, next run `2026-06-15T07:00:00-05:00`
+- `df90bc308b61` — `sunday-system-audit`, next run `2026-06-21T09:00:00-05:00`
+
+The nightly backup is deliberately NOT an agent automation — Step 3.
 
 ### Step 3 — Nightly backups (host-level, survives agent failure)
 
@@ -696,13 +713,20 @@ hermes kanban stats
 /Volumes/BotCentral/Users/milo/bin/hermes-phase6-finalize.sh --yes
 docker image prune    # review list; remove openclaw-mission-control images
 # Keep permanently: /Volumes/MiloCache/archives/*, /Volumes/MiloCache/quarantine/*,
-# ~/migration-assets/. OpenHermes stays quarantined pending John's later decision.
+# ~/migration-assets/.
 ```
 
 Execution note (2026-06-14): Phase 6 passed after reboot, the guarded finalizer
 removed `.openclaw-retired` and `openclaw-mission-control_postgres_data`, and
 the OpenClaw Mission Control images were removed. Finalizer logs:
 `/Volumes/MiloCache/archives/hermes-phase6-finalize-20260614-112619`.
+
+OpenHermes final retirement note (2026-06-14): owner approved full retirement. Fresh
+final archives were written under
+`/Volumes/MiloCache/quarantine/openhermes/final-retire-20260614-141940/`; then
+`/Volumes/BotCentral/Users/milo/.openhermes`,
+`/Volumes/BotCentral/Users/milo/repos/OpenHermes`, and
+`/Volumes/BotCentral/Users/milo/Downloads/OPENHERMES_HANDOFF.md` were removed.
 
 Reboot check fails on the gateway → Stream D Step 7 Plan B, re-run the gate.
 
