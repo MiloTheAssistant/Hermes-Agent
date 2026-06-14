@@ -1,4 +1,4 @@
-# Claude Code Brief v2.2 — OpenClaw Decommission + Hermes Agent (Streams A–E)
+# Claude Code Brief v2.3 — OpenClaw Decommission + Hermes Agent (Streams A–E)
 
 Supersedes `hermes-migration-brief-streams-AB.md` / `-CDE.md` (v1) and reconciles
 `plans/HermesCodex.md`. Rewritten 2026-06-12 after verifying all three documents against
@@ -11,15 +11,23 @@ speed** — fewest moving parts, fastest responses, full tools/skills/MCP capabi
 
 | Field | Value |
 |-------|-------|
-| Current version | v2.2 |
+| Current version | v2.3 |
 | Status | Post-execution final plan, retained as a tracked migration/audit artifact |
-| Last live validation | 2026-06-14 12:44 CDT |
+| Last live validation | 2026-06-14 14:15 CDT |
 | Source checkout | `/Volumes/BotCentral/Users/milo/repos/hermes-agent` |
 | Tracking branch | `codex/track-hermes-migration-plan` |
 | Upstream Hermes base | `7433d5f0eb22ae95c2aa5bd4cffa55df382573af` |
 | Hermes version | `Hermes Agent v0.16.0 (2026.6.5)` |
-| Runtime state | Hermes live; OpenClaw removed; OpenHermes quarantined/inert |
-| Remaining live gate | Set Telegram home channel, then run outbound `hermes send --to telegram` smoke test |
+| Runtime state | Hermes live; Telegram outbound delivery verified; OpenClaw removed; OpenHermes quarantined/inert |
+| Remaining live gate | None for the approved Telegram DM channel |
+
+## What changed v2.2 → v2.3 (live-channel completion)
+
+| Topic | v2.2 said | v2.3 says | Why |
+|-------|-----------|-----------|-----|
+| Telegram authorization | Pairing/home-channel setup still pending | Telegram user `Milo` is approved in the pairing store | The pending Telegram DM request was owner-approved locally. |
+| Telegram home channel | `TELEGRAM_HOME_CHANNEL` missing | Home channel is set for the Telegram DM | Hermes can now resolve the bare `telegram` delivery target. |
+| Outbound smoke | Blocked by missing home channel | `hermes send --to telegram` succeeded | Live smoke sent to the Telegram home channel on 2026-06-14 at 14:15 CDT. |
 
 ## What changed v2.1 → v2.2 (post-execution reconciliation)
 
@@ -528,11 +536,9 @@ hermes config set TELEGRAM_HOME_CHANNEL <telegram_chat_id>  # or send /sethome f
 echo "gateway service live — $(date)" | hermes send --to telegram
 ```
 
-Current live check, 2026-06-14: the Telegram gateway is connected in polling mode,
-but the outbound channel directory has `0` Telegram targets and
-`TELEGRAM_HOME_CHANNEL` is unset. Inbound Telegram is expected to work through
-the running gateway, but still needs a phone-side reply test; proactive delivery
-and `hermes send --to telegram` need the home channel set first.
+Current live check, 2026-06-14 14:15 CDT: Telegram user `Milo` is approved in the
+pairing store, `TELEGRAM_HOME_CHANNEL` is set for the DM chat, and
+`hermes send --to telegram` succeeded.
 
 ### Step 7 — Plan B (only if the Phase 6 reboot test fails)
 
