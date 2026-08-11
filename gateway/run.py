@@ -7387,6 +7387,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical == "topics":
+            return await self._handle_topics_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)

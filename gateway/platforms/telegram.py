@@ -480,6 +480,19 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
         }
+        # Group (forum supergroup) topics config from extra.group_topics. Unlike
+        # dm_topics these are never created by us — an admin makes them in the
+        # Telegram UI — but we discover their thread_ids as messages arrive so
+        # the operator never has to read them out of t.me/c/<id>/<thread> links.
+        self._group_topics_config: List[Dict[str, Any]] = self.config.extra.get("group_topics", [])
+        # Set of "chat_id:thread_id" pairs already seen, so discovery touches
+        # config.yaml once per topic rather than once per message.
+        self._group_topics_seen: Set[str] = {
+            f"{entry.get('chat_id')}:{topic.get('thread_id')}"
+            for entry in self._group_topics_config
+            for topic in entry.get("topics", [])
+            if topic.get("thread_id") is not None
+        }
         # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
         # locally-hosted telegram-bot-api server (configured via extra.base_url)
         # raises that to 2GB, so the presence of base_url is the opt-in.
@@ -5149,6 +5162,12 @@ class TelegramAdapter(BasePlatformAdapter):
         silently ignored. DMs are never filtered by topic. Telegram may omit
         ``message_thread_id`` for the forum General topic, so ``None`` is
         treated as topic ``1`` for matching purposes.
+
+        Entries are either a bare thread id (``5``), which matches that thread
+        in *any* group, or a chat-scoped ``chat_id:thread_id`` pair
+        (``-1001234567890:5``), which matches only that group. Use
+        :meth:`_telegram_topic_allowed` rather than testing membership
+        directly so both forms are honoured.
         """
         raw = self.config.extra.get("allowed_topics")
         if raw is None:
@@ -5156,6 +5175,31 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_topic_allowed(
+        self,
+        chat_id: Any,
+        thread_id: Any,
+        allowed_topics: Optional[set[str]] = None,
+    ) -> bool:
+        """Return True when this chat/topic passes the ``allowed_topics`` gate.
+
+        An empty allowlist allows everything. Otherwise the message must match
+        either a bare thread id or a ``chat_id:thread_id`` entry. A whitelist
+        made up only of chat-scoped entries therefore filters out every other
+        group, which is the point: bare ids used to leak across groups that
+        happened to share a thread number.
+        """
+        if allowed_topics is None:
+            allowed_topics = self._telegram_allowed_topics()
+        if not allowed_topics:
+            return True
+        topic_id = (
+            str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        )
+        if topic_id in allowed_topics:
+            return True
+        return f"{chat_id}:{topic_id}" in allowed_topics
 
     def _telegram_ignored_threads(self) -> set[int]:
         raw = self.config.extra.get("ignored_threads")
@@ -5397,11 +5441,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
         thread_id = getattr(message, "message_thread_id", None)
-        allowed_topics = self._telegram_allowed_topics()
-        if allowed_topics:
-            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
-            if topic_id not in allowed_topics:
-                return False
+        observe_chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if not self._telegram_topic_allowed(observe_chat_id, thread_id):
+            return False
 
         if thread_id is not None:
             try:
@@ -5410,7 +5452,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except (TypeError, ValueError):
                 return False
 
-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        chat_id_str = observe_chat_id
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
 
@@ -5683,11 +5725,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
-        allowed_topics = self._telegram_allowed_topics()
-        if allowed_topics:
-            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
-            if topic_id not in allowed_topics:
-                return False
+        if not self._telegram_topic_allowed(
+            str(getattr(getattr(message, "chat", None), "id", "")), thread_id
+        ):
+            return False
 
         # Check ignored_threads first — applies to both groups and DM topics
         if thread_id is not None:
@@ -6456,6 +6497,264 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    # ── Group (forum supergroup) topics ──────────────────────────────────
+
+    def _ensure_group_topic_state(self) -> None:
+        """Initialise group-topic state for adapters built without ``__init__``.
+
+        Several call sites (and a number of tests) construct the adapter via
+        ``object.__new__`` and populate only what they need, so the discovery
+        path can't assume ``__init__`` ran.
+        """
+        if not hasattr(self, "_group_topics_config"):
+            extra = getattr(self.config, "extra", None) or {}
+            self._group_topics_config = extra.get("group_topics", [])
+        if not hasattr(self, "_group_topics_seen"):
+            self._group_topics_seen = {
+                f"{entry.get('chat_id')}:{topic.get('thread_id')}"
+                for entry in self._group_topics_config
+                for topic in entry.get("topics", [])
+                if topic.get("thread_id") is not None
+            }
+
+    def _reload_group_topics_from_config(self) -> None:
+        """Re-read ``group_topics`` from config.yaml into the in-memory config.
+
+        Mirrors :meth:`_reload_dm_topics_from_config`: lets an operator add a
+        ``skill`` binding to a discovered topic without restarting the gateway.
+        """
+        self._ensure_group_topic_state()
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = _yaml.safe_load(f) or {}
+
+            extra = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+            )
+            if "group_topics" not in extra:
+                # config.yaml simply doesn't use this key. Leave whatever came
+                # in via PlatformConfig.extra alone rather than clobbering an
+                # operator's skill bindings with an empty list.
+                return
+            self._group_topics_config = extra.get("group_topics") or []
+            self._group_topics_seen = {
+                f"{entry.get('chat_id')}:{topic.get('thread_id')}"
+                for entry in self._group_topics_config
+                for topic in entry.get("topics", [])
+                if topic.get("thread_id") is not None
+            }
+        except Exception as e:
+            logger.debug("[%s] Failed to reload group_topics from config: %s", self.name, e)
+
+    def _get_group_topic_info(
+        self, chat_id: str, thread_id: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Look up group forum topic config by chat_id and thread_id.
+
+        Returns the topic dict (``name``, ``skill``, ...) or None. On a cache
+        miss the config is re-read once, so topics added to config.yaml while
+        the gateway runs are picked up without a restart.
+        """
+        if not thread_id:
+            return None
+        self._ensure_group_topic_state()
+
+        def _lookup() -> Optional[Dict[str, Any]]:
+            for chat_entry in self._group_topics_config:
+                if str(chat_entry.get("chat_id", "")) != str(chat_id):
+                    continue
+                for topic in chat_entry.get("topics", []):
+                    tid = topic.get("thread_id")
+                    if tid is not None and str(tid) == str(thread_id):
+                        return topic
+                return None
+            return None
+
+        found = _lookup()
+        if found is not None:
+            return found
+
+        self._reload_group_topics_from_config()
+        return _lookup()
+
+    def _extract_forum_topic_name(self, message: Message) -> Optional[str]:
+        """Best-effort topic name for a forum message.
+
+        Two sources, both provided by Telegram rather than inferred:
+
+        - ``forum_topic_created`` on the message itself (fires once, when the
+          topic is created while the bot is a member).
+        - ``forum_topic_created`` on ``reply_to_message`` — forum messages that
+          reply to the topic's opening service message carry it, which is how
+          pre-existing topics get named.
+
+        ``forum_topic_edited`` is also honoured so renames propagate.
+        """
+        created = getattr(message, "forum_topic_created", None)
+        name = getattr(created, "name", None) if created else None
+        if name:
+            return str(name)
+
+        edited = getattr(message, "forum_topic_edited", None)
+        name = getattr(edited, "name", None) if edited else None
+        if name:
+            return str(name)
+
+        reply = getattr(message, "reply_to_message", None)
+        if reply is not None:
+            reply_created = getattr(reply, "forum_topic_created", None)
+            name = getattr(reply_created, "name", None) if reply_created else None
+            if name:
+                return str(name)
+        return None
+
+    def _discover_group_topic(
+        self,
+        chat_id: str,
+        thread_id: str,
+        name: Optional[str] = None,
+    ) -> None:
+        """Record a forum topic seen in a group so it lands in config.yaml.
+
+        Unnamed topics are still recorded — the thread_id is the useful half,
+        and it gives the operator a config stanza to hang a ``skill`` on. A
+        name learned later (rename, or a reply that carries the topic's
+        opening service message) upgrades the existing entry.
+        """
+        self._ensure_group_topic_state()
+        seen_key = f"{chat_id}:{thread_id}"
+        if seen_key in self._group_topics_seen and not name:
+            return
+
+        existing = self._get_group_topic_info(chat_id, thread_id)
+        if existing is not None:
+            self._group_topics_seen.add(seen_key)
+            # Only write when we learned a name the config doesn't have yet, or
+            # the topic was renamed in Telegram.
+            if not name or existing.get("name") == name:
+                return
+
+        self._group_topics_seen.add(seen_key)
+        self._persist_group_topic(chat_id, thread_id, name)
+
+    def _persist_group_topic(
+        self,
+        chat_id: str,
+        thread_id: str,
+        name: Optional[str] = None,
+    ) -> None:
+        """Write a discovered forum topic into ``extra.group_topics``.
+
+        Never clobbers an operator-set ``skill`` — only ``name`` is updated,
+        and only when Telegram gave us one.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                logger.debug(
+                    "[%s] Config file not found at %s, cannot persist group topic",
+                    self.name, config_path,
+                )
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = _yaml.safe_load(f) or {}
+
+            platforms = config.setdefault("platforms", {})
+            telegram_config = platforms.setdefault("telegram", {})
+            extra = telegram_config.setdefault("extra", {})
+            group_topics = extra.setdefault("group_topics", [])
+
+            try:
+                chat_id_value: Any = int(chat_id)
+            except (TypeError, ValueError):
+                chat_id_value = chat_id
+            thread_id_value = int(thread_id)
+
+            chat_entry = None
+            for entry in group_topics:
+                if str(entry.get("chat_id", "")) == str(chat_id):
+                    chat_entry = entry
+                    break
+            if chat_entry is None:
+                chat_entry = {"chat_id": chat_id_value, "topics": []}
+                group_topics.append(chat_entry)
+
+            changed = False
+            topics = chat_entry.setdefault("topics", [])
+            for topic in topics:
+                tid = topic.get("thread_id")
+                if tid is not None and str(tid) == str(thread_id):
+                    if name and topic.get("name") != name:
+                        topic["name"] = name
+                        changed = True
+                    break
+            else:
+                new_topic: Dict[str, Any] = {"thread_id": thread_id_value}
+                if name:
+                    new_topic["name"] = name
+                topics.append(new_topic)
+                changed = True
+
+            if not changed:
+                return
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(config_path.parent),
+                suffix=".tmp",
+                prefix=".config_",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                atomic_replace(tmp_path, config_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+            self._group_topics_config = group_topics
+            logger.info(
+                "[%s] Discovered group topic chat_id=%s thread_id=%s name=%r",
+                self.name, chat_id, thread_id, name,
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to persist group topic to config: %s",
+                self.name, e, exc_info=True,
+            )
+
+    def known_group_topics(self, chat_id: str) -> List[Dict[str, Any]]:
+        """Return known forum topics for ``chat_id``, freshest config first.
+
+        Used by ``/topics`` to answer "which topic is which".
+        """
+        self._ensure_group_topic_state()
+        self._reload_group_topics_from_config()
+        for chat_entry in self._group_topics_config:
+            if str(chat_entry.get("chat_id", "")) == str(chat_id):
+                topics = [
+                    dict(topic)
+                    for topic in chat_entry.get("topics", [])
+                    if topic.get("thread_id") is not None
+                ]
+                return sorted(topics, key=lambda t: int(t["thread_id"]))
+        return []
+
     def _build_message_event(
         self,
         message: Message,
@@ -6523,17 +6822,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
-            group_topics_config: list = self.config.extra.get("group_topics", [])
-            for chat_entry in group_topics_config:
-                if str(chat_entry.get("chat_id", "")) == str(chat.id):
-                    for topic in chat_entry.get("topics", []):
-                        tid = topic.get("thread_id")
-                        if tid is not None and str(tid) == thread_id_str:
-                            chat_topic = topic.get("name")
-                            topic_skill = topic.get("skill")
-                            break
-                    break
+            # Group/supergroup forum topic skill binding via config.extra['group_topics'].
+            # Topics are discovered as they're used, so the operator never has to
+            # dig thread_ids out of t.me/c/<id>/<thread> links by hand.
+            discovered_name = self._extract_forum_topic_name(message)
+            self._discover_group_topic(str(chat.id), thread_id_str, discovered_name)
+
+            topic_info = self._get_group_topic_info(str(chat.id), thread_id_str)
+            if topic_info:
+                chat_topic = topic_info.get("name")
+                topic_skill = topic_info.get("skill")
+            if not chat_topic and discovered_name:
+                chat_topic = discovered_name
 
         # Build source
         source = self.build_source(

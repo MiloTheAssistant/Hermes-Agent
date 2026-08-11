@@ -69,6 +69,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
+    CommandDef("topics", "List the Telegram forum topics Hermes knows in this group", "Session",
+               gateway_only=True),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -1053,7 +1055,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
+#   - topics: lists Telegram forum topics, so it has nothing to do on a Slack
+#     workspace; reached via /hermes topics there.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "topics"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

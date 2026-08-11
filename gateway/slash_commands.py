@@ -2739,6 +2739,58 @@ class GatewaySlashCommandsMixin:
 
         return self._telegram_topic_root_status_message(source)
 
+    async def _handle_topics_command(self, event: MessageEvent, args: str = "") -> str:
+        """Handle /topics — list the forum topics Hermes knows about here.
+
+        Answers "which topic is which" without leaving Telegram: thread id,
+        name, any bound skill, and the exact ``deliver`` target to point a
+        cron job at a topic.
+        """
+        source = event.source
+        if source.platform != Platform.TELEGRAM:
+            return t("gateway.topics.not_telegram")
+
+        if source.chat_type == "dm":
+            # DM topics are a different table; point the user at /topic, which
+            # owns that mode end to end.
+            return t("gateway.topics.dm_use_topic")
+
+        adapter = self.adapters.get(Platform.TELEGRAM) if getattr(self, "adapters", None) else None
+        if adapter is None or not hasattr(adapter, "known_group_topics"):
+            return t("gateway.topics.not_forum")
+
+        try:
+            topics = adapter.known_group_topics(str(source.chat_id))
+        except Exception:
+            logger.debug("Failed to list group topics", exc_info=True)
+            topics = []
+
+        if not topics:
+            return t("gateway.topics.none_known")
+
+        chat_label = source.chat_name or str(source.chat_id)
+        lines = [t("gateway.topics.header", chat=chat_label, count=len(topics))]
+        for topic in topics:
+            thread_id = topic.get("thread_id")
+            name = topic.get("name") or t("gateway.topics.unnamed")
+            row = f"`{thread_id}` — {name}"
+            skill = topic.get("skill")
+            if skill:
+                row += f" · skill: `{skill}`"
+            if source.thread_id and str(source.thread_id) == str(thread_id):
+                row += f"  {t('gateway.topics.current_marker')}"
+            lines.append(row)
+
+        example_thread = source.thread_id or topics[0].get("thread_id")
+        lines.append("")
+        lines.append(
+            t(
+                "gateway.topics.footer",
+                example=f"telegram:{source.chat_id}:{example_thread}",
+            )
+        )
+        return "\n".join(lines)
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
