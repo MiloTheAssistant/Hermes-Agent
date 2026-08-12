@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Багатосесійні Telegram topics увімкнено.\n\nЦей topic використовуватиметься як незалежна сесія Hermes. Використовуйте /new, щоб замінити поточну сесію цього topic. Для паралельної роботи відкрийте All Messages і надішліть там повідомлення, щоб створити інший topic."
     untitled_session:        "Сесія без назви"
 
+  topics:
+    not_telegram:            "Команда /topics доступна лише в Telegram."
+    not_forum:               "У цьому чаті немає topics. Увімкніть Topics у налаштуваннях групи, потім надішліть /topics ще раз."
+    dm_use_topic:            "/topics виводить forum topics групи. У приватних повідомленнях використовуйте /topic для керування багатосеансовими topics."
+    none_known:              "У цій групі поки не виявлено жодного topic.\n\nНадішліть по одному повідомленню в кожен topic — Hermes автоматично запише thread_id, і /topics покаже їх тут."
+    header:                  "**Topics у {chat}** ({count})"
+    unnamed:                 "(без назви)"
+    current_marker:          "← ви тут"
+    footer:                  "Доставити cron-завдання в topic: `deliver: \"{example}\"`.\nЩоб прив'язати навичку, додайте `skill:` до topic у розділі `platforms.telegram.extra.group_topics` у config.yaml."
+
   undo:
     nothing:               "Немає чого скасовувати."
     removed:               "↩️ Скасовано ходів: {turns} (повідомлень: {count}).\nРезервна копія: «{preview}»\nСкопіюйте/відредагуйте текст вище та надішліть його, щоб запитати знову звідси."

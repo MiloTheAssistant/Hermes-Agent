@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Telegram のマルチセッション topics が有効です。\n\nこの topic は独立した Hermes セッションとして使用されます。この topic の現在のセッションを置き換えるには /new を使用してください。並行作業には、All Messages を開いてメッセージを送信し、別の topic を作成してください。"
     untitled_session:        "無題のセッション"
 
+  topics:
+    not_telegram:            "/topics コマンドは Telegram でのみ利用できます。"
+    not_forum:               "このチャットには topics がありません。グループ設定で Topics を有効にしてから、もう一度 /topics を送信してください。"
+    dm_use_topic:            "/topics はグループのフォーラム topics を一覧表示します。DM ではマルチセッションの topics を管理する /topic を使ってください。"
+    none_known:              "このグループではまだ topic が検出されていません。\n\n各 topic で一度メッセージを送ってください — Hermes が thread_id を自動的に記録し、/topics がここに一覧表示します。"
+    header:                  "**{chat} の Topics** ({count})"
+    unnamed:                 "(名前なし)"
+    current_marker:          "← 現在ここ"
+    footer:                  "cron ジョブを topic に配信するには `deliver: \"{example}\"` を使います。\nスキルを紐付けるには、config.yaml の `platforms.telegram.extra.group_topics` にある topic に `skill:` を追加します。"
+
   undo:
     nothing:               "元に戻せる操作がありません。"
     removed:               "↩️ {turns} ターンを取り消しました（{count} 件のメッセージ）。\nバックアップ先: 「{preview}」\n上のテキストをコピー／編集して送信すると、ここから再入力できます。"

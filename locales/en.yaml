@@ -318,6 +318,16 @@ gateway:
     thread_ready:            "Telegram multi-session topics are enabled.\n\nThis topic will be used as an independent Hermes session. Use /new to replace this topic's current session. For parallel work, open All Messages and send a message there to create another topic."
     untitled_session:        "Untitled session"
 
+  topics:
+    not_telegram:            "The /topics command is only available on Telegram."
+    not_forum:               "This chat has no topics. Enable Topics in the group settings, then send /topics again."
+    dm_use_topic:            "/topics lists forum topics in a group. In a DM, use /topic to manage multi-session topics instead."
+    none_known:              "No topics discovered yet in this group.\n\nSend a message in each topic once — Hermes records the thread id automatically and /topics will list them here."
+    header:                  "**Topics in {chat}** ({count})"
+    unnamed:                 "(unnamed)"
+    current_marker:          "← you are here"
+    footer:                  "Deliver a cron job to a topic with `deliver: \"{example}\"`.\nBind a skill by adding `skill:` to the topic under `platforms.telegram.extra.group_topics` in config.yaml."
+
   undo:
     nothing:               "Nothing to undo."
     removed:               "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."

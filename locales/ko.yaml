@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
     untitled_session:        "제목 없는 세션"
 
+  topics:
+    not_telegram:            "/topics 명령은 Telegram에서만 사용할 수 있습니다."
+    not_forum:               "이 채팅에는 topics가 없습니다. 그룹 설정에서 Topics를 활성화한 뒤 /topics를 다시 보내세요."
+    dm_use_topic:            "/topics는 그룹의 포럼 topics를 나열합니다. DM에서는 다중 세션 topics를 관리하는 /topic을 사용하세요."
+    none_known:              "이 그룹에서 아직 발견된 topic이 없습니다.\n\n각 topic에서 메시지를 한 번씩 보내세요 — Hermes가 thread_id를 자동으로 기록하고 /topics가 여기에 나열합니다."
+    header:                  "**{chat}의 Topics** ({count})"
+    unnamed:                 "(이름 없음)"
+    current_marker:          "← 현재 위치"
+    footer:                  "cron 작업을 topic으로 보내려면 `deliver: \"{example}\"`를 사용하세요.\n스킬을 연결하려면 config.yaml의 `platforms.telegram.extra.group_topics` 아래 topic에 `skill:`을 추가하세요."
+
   undo:
     nothing:               "되돌릴 내용이 없습니다."
     removed:               "↩️ {turns}개 턴을 되돌렸습니다 (메시지 {count}개).\n백업 위치: \"{preview}\"\n위 텍스트를 복사/편집한 후 보내면 여기서 다시 프롬프트할 수 있습니다."

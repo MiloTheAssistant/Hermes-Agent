@@ -859,10 +859,120 @@ platforms:
 | `icon_color` / `icon_custom_emoji_id` | Supported | Not applicable (admin controls appearance) |
 | Skill binding | ✓ | ✓ |
 | Session isolation | ✓ | ✓ (already built-in for forum topics) |
+| `thread_id` discovery | On creation | Auto-recorded on first message in the topic |
 
 :::tip
-To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and look at the URL: `https://t.me/c/1234567890/5` — the last number (`5`) is the `thread_id`. The `chat_id` for supergroups is the group ID prefixed with `-100` (e.g., group `1234567890` becomes `-1001234567890`).
+You rarely need to look a `thread_id` up by hand — see [Topic discovery](#topic-discovery) below. If you want it anyway, open the topic in Telegram Web or Desktop and look at the URL: `https://t.me/c/1234567890/5` — the last number (`5`) is the `thread_id`. The `chat_id` for supergroups is the group ID prefixed with `-100` (e.g., group `1234567890` becomes `-1001234567890`).
 :::
+
+### Topic discovery
+
+Hermes records forum topics as it sees them. The first message in a topic writes a stanza into `extra.group_topics` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      group_topics:
+      - chat_id: -1001234567890
+        topics:
+        - thread_id: 5
+          name: briefs
+```
+
+The name comes from Telegram — either the `forum_topic_created` service message (topics created while Hermes is in the group) or the topic's opening message when someone replies inside it. A topic Hermes can't name yet is still recorded with its `thread_id`, which is the half you can't get from the Telegram UI. Renaming a topic in Telegram updates the `name` on the next message.
+
+Discovery only ever writes `thread_id` and `name`. A `skill:` you add by hand is never touched.
+
+### Listing topics: `/topics`
+
+Send `/topics` in the supergroup to see what Hermes knows:
+
+```
+**Topics in Hermes HQ** (4)
+`2` — general
+`5` — briefs · skill: morning
+`9` — ideas  ← you are here
+`14` — projects
+
+Deliver a cron job to a topic with `deliver: "telegram:-1001234567890:9"`.
+```
+
+The footer gives you the exact `deliver` target to paste into a cron job. `/topics` is group-only; in a DM use [`/topic`](#multi-session-dm-mode-topic), which manages DM topic sessions instead.
+
+## Forum supergroup setup
+
+A walkthrough for the common case: one supergroup, a handful of long-running topics, each its own Hermes session.
+
+**1. Create the group and enable topics.** In Telegram, create a group, add your bot, then open group settings → **Topics** → enable. Telegram converts the group to a supergroup with forum mode. Create your topics — for example `general`, `briefs`, `ideas`, `projects`.
+
+**2. Promote the bot.** The bot needs admin rights in the supergroup to read every topic and to register its command menu.
+
+**3. Let Hermes learn the topics.** Send one message in each topic. Hermes records each `thread_id` into `config.yaml` (see [Topic discovery](#topic-discovery)). Run `/topics` to confirm all four are listed.
+
+**4. Allow the group to respond without a mention.** By default Hermes only answers in groups when @mentioned. For a private workspace group you almost certainly want it to answer everything:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      allowed_chats: "-1001234567890"
+      free_response_chats: "-1001234567890"
+```
+
+If you want Hermes active in some topics but not others, add `allowed_topics` scoped to this group (see [Restricting to specific topics](#restricting-to-specific-topics)) or list the quiet ones in `ignored_threads`.
+
+**5. Pin a default topic (optional).** Cron jobs and restart notices that target bare `telegram` land in the home channel. Send `/sethome` inside the topic you want as the default, or set it explicitly:
+
+```bash
+TELEGRAM_HOME_CHANNEL=-1001234567890
+TELEGRAM_HOME_CHANNEL_THREAD_ID=2
+TELEGRAM_CRON_THREAD_ID=5          # optional: send cron briefs to #briefs instead
+```
+
+**6. Bind skills (optional).** Add a `skill:` to any topic Hermes discovered:
+
+```yaml
+      group_topics:
+      - chat_id: -1001234567890
+        topics:
+        - thread_id: 2
+          name: general
+        - thread_id: 5
+          name: briefs
+          skill: morning
+        - thread_id: 9
+          name: ideas
+        - thread_id: 14
+          name: projects
+          skill: software-development
+```
+
+Skill bindings are picked up without a gateway restart.
+
+Each topic now has its own session, history, and context window. Cron jobs can target any of them with `deliver: "telegram:-1001234567890:<thread_id>"`.
+
+### Restricting to specific topics
+
+`allowed_topics` gates which forum topics Hermes handles at all. Entries take either form:
+
+| Entry | Matches |
+|---|---|
+| `5` | thread `5` in **any** group |
+| `-1001234567890:5` | thread `5` in that group only |
+
+Prefer the scoped form when the bot is in more than one group — two unrelated groups can easily both have a thread `5`, and a bare entry admits both.
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      allowed_topics:
+        - "-1001234567890:2"
+        - "-1001234567890:5"
+```
+
+Telegram omits `message_thread_id` for the General topic, so `1` (or `<chat_id>:1`) matches it either way. DMs are never filtered by `allowed_topics`.
 
 ## Recent Bot API Features
 

@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Os topics multi-sessão do Telegram estão ativados.\n\nEste topic será usado como uma sessão independente do Hermes. Usa /new para substituir a sessão atual deste topic. Para trabalho paralelo, abre All Messages e envia uma mensagem aí para criar outro topic."
     untitled_session:        "Sessão sem título"
 
+  topics:
+    not_telegram:            "O comando /topics só está disponível no Telegram."
+    not_forum:               "Este chat não tem topics. Ative Topics nas configurações do grupo e envie /topics novamente."
+    dm_use_topic:            "/topics lista os topics de fórum de um grupo. Num DM, use /topic para gerir sessões múltiplas."
+    none_known:              "Nenhum topic detetado neste grupo ainda.\n\nEnvie uma mensagem uma vez em cada topic — o Hermes regista o thread_id automaticamente e o /topics vai listá-los aqui."
+    header:                  "**Topics em {chat}** ({count})"
+    unnamed:                 "(sem nome)"
+    current_marker:          "← está aqui"
+    footer:                  "Entregue um cron a um topic com `deliver: \"{example}\"`.\nAssocie uma skill adicionando `skill:` ao topic em `platforms.telegram.extra.group_topics` no config.yaml."
+
   undo:
     nothing:               "Nada para anular."
     removed:               "↩️ {turns} turno(s) anulado(s) ({count} mensagem(ns)).\nGuardado em: \"{preview}\"\nCopia/edita o texto acima e envia-o para voltar a perguntar a partir daqui."

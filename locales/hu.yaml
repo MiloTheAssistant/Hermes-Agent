@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "A többmunkamenetes Telegram topicok engedélyezve vannak.\n\nEz a topic független Hermes-munkamenetként szolgál. Használd a /new parancsot, hogy lecseréld a topic jelenlegi munkamenetét. Párhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
     untitled_session:        "Cím nélküli munkamenet"
 
+  topics:
+    not_telegram:            "A /topics parancs csak Telegramon érhető el."
+    not_forum:               "Ennek a csevegésnek nincsenek topicjai. Kapcsold be a Topics funkciót a csoport beállításaiban, majd küldd újra a /topics parancsot."
+    dm_use_topic:            "A /topics egy csoport fórum-topicjait listázza. DM-ben használd inkább a /topic parancsot a többmunkamenetes topicokhoz."
+    none_known:              "Ebben a csoportban még nem található topic.\n\nKüldj egyszer üzenetet minden topicban — a Hermes automatikusan rögzíti a thread_id-t, és a /topics itt fogja listázni őket."
+    header:                  "**Topicok itt: {chat}** ({count})"
+    unnamed:                 "(névtelen)"
+    current_marker:          "← itt vagy"
+    footer:                  "Cron-feladatot így küldhetsz egy topicba: `deliver: \"{example}\"`.\nSkillt úgy kötsz hozzá, hogy a `skill:` kulcsot beírod a topichoz a config.yaml `platforms.telegram.extra.group_topics` szakaszában."
+
   undo:
     nothing:               "Nincs mit visszavonni."
     removed:               "↩️ {turns} fordulat visszavonva ({count} üzenet).\nBiztonsági mentés ide: \"{preview}\"\nMásold/szerkeszd a fenti szöveget, és küldd el, hogy innen újra kérdezz."
