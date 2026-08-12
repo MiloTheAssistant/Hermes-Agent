@@ -256,6 +256,89 @@ def test_discovery_survives_missing_config_file():
     assert not _config_path().exists()
 
 
+# ── discovery runs independently of the mention gate ─────────────────────
+
+
+def _adapter_with_gates(**extra):
+    config = PlatformConfig(enabled=True, token="***", extra=extra)
+    adapter = TelegramAdapter(config)
+    adapter._bot = MagicMock()
+    adapter._bot.username = "hermes_bot"
+    return adapter
+
+
+def test_unmentioned_message_still_discovers_topic():
+    """The whole point: a mention-gated group still gets its topics recorded."""
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=True)
+    msg = _group_message(thread_id=7, text="no mention here")
+
+    assert adapter._should_process_message(msg) is False  # not answered...
+    assert _read_group_topics()[0]["topics"] == [{"thread_id": 7}]  # ...but recorded
+
+
+def test_discovery_skipped_for_chat_outside_allowed_chats():
+    """Hermes must not record structure for chats it was told to ignore."""
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=False, allowed_chats="-100999")
+    msg = _group_message(chat_id=CHAT_ID, thread_id=7)
+
+    assert adapter._should_process_message(msg) is False
+    assert _read_group_topics() == []
+
+
+def test_discovery_skipped_for_topic_outside_allowed_topics():
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=False, allowed_topics=["2"])
+    msg = _group_message(thread_id=7)
+
+    assert adapter._should_process_message(msg) is False
+    assert _read_group_topics() == []
+
+
+def test_discovery_skipped_for_ignored_thread():
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=False, ignored_threads="7")
+    msg = _group_message(thread_id=7)
+
+    assert adapter._should_process_message(msg) is False
+    assert _read_group_topics() == []
+
+
+def test_discovery_ignores_plain_reply_anchor_in_non_forum_group():
+    """message_thread_id is also set for ordinary reply anchors (#3206)."""
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=False)
+    msg = _group_message(thread_id=7)
+    msg.chat.is_forum = False
+    msg.is_topic_message = False
+
+    adapter._should_process_message(msg)
+
+    assert _read_group_topics() == []
+
+
+def test_discovery_records_general_topic_without_thread_id():
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=False)
+    msg = _group_message(thread_id=None)
+    msg.chat.is_forum = True
+
+    adapter._should_process_message(msg)
+
+    assert _read_group_topics()[0]["topics"] == [{"thread_id": 1}]
+
+
+def test_dm_never_discovers_group_topics():
+    _write_config({"platforms": {"telegram": {"extra": {}}}})
+    adapter = _adapter_with_gates(require_mention=True)
+    msg = _group_message(thread_id=7)
+    msg.chat.type = "private"
+
+    assert adapter._should_process_message(msg) is True
+    assert _read_group_topics() == []
+
+
 # ── _build_message_event integration ─────────────────────────────────────
 
 
