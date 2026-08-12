@@ -6593,36 +6593,42 @@ class TelegramAdapter(BasePlatformAdapter):
         self._reload_group_topics_from_config()
         return _lookup()
 
-    def _extract_forum_topic_name(self, message: Message) -> Optional[str]:
+    def _extract_forum_topic_name(self, message: Message) -> tuple[Optional[str], bool]:
         """Best-effort topic name for a forum message.
 
         Two sources, both provided by Telegram rather than inferred:
 
         - ``forum_topic_created`` on the message itself (fires once, when the
           topic is created while the bot is a member).
+        - ``forum_topic_edited`` on the message itself — a rename that just
+          happened.
         - ``forum_topic_created`` on ``reply_to_message`` — forum messages that
           reply to the topic's opening service message carry it, which is how
           pre-existing topics get named.
 
-        ``forum_topic_edited`` is also honoured so renames propagate.
+        Returns ``(name, authoritative)``. Only the first two describe the
+        topic's *current* name. The reply anchor carries the name the topic had
+        when it was created and never changes, so it must not be allowed to
+        overwrite a name already on record — otherwise every message in a
+        renamed topic reverts it.
         """
         created = getattr(message, "forum_topic_created", None)
         name = getattr(created, "name", None) if created else None
         if name:
-            return str(name)
+            return str(name), True
 
         edited = getattr(message, "forum_topic_edited", None)
         name = getattr(edited, "name", None) if edited else None
         if name:
-            return str(name)
+            return str(name), True
 
         reply = getattr(message, "reply_to_message", None)
         if reply is not None:
             reply_created = getattr(reply, "forum_topic_created", None)
             name = getattr(reply_created, "name", None) if reply_created else None
             if name:
-                return str(name)
-        return None
+                return str(name), False
+        return None, False
 
     def _discover_group_topic_from_message(self, message: Message) -> None:
         """Record the forum topic a group message arrived in, if any.
@@ -6652,8 +6658,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         try:
+            name, authoritative = self._extract_forum_topic_name(message)
             self._discover_group_topic(
-                str(chat.id), thread_id, self._extract_forum_topic_name(message)
+                str(chat.id), thread_id, name, authoritative=authoritative
             )
         except Exception:
             logger.debug("[%s] Group topic discovery failed", self.name, exc_info=True)
@@ -6663,13 +6670,20 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         thread_id: str,
         name: Optional[str] = None,
+        *,
+        authoritative: bool = False,
     ) -> None:
         """Record a forum topic seen in a group so it lands in config.yaml.
 
         Unnamed topics are still recorded — the thread_id is the useful half,
-        and it gives the operator a config stanza to hang a ``skill`` on. A
-        name learned later (rename, or a reply that carries the topic's
-        opening service message) upgrades the existing entry.
+        and it gives the operator a config stanza to hang a ``skill`` on.
+
+        ``authoritative`` says whether ``name`` describes the topic's current
+        name (a creation or rename event) rather than a historical echo. A
+        non-authoritative name fills in a blank but never overwrites a name
+        already on record: the reply anchor Telegram attaches to forum messages
+        is frozen at creation time, so letting it overwrite would revert both
+        real renames and operator corrections on every single message.
         """
         self._ensure_group_topic_state()
         seen_key = f"{chat_id}:{thread_id}"
@@ -6679,9 +6693,9 @@ class TelegramAdapter(BasePlatformAdapter):
         existing = self._get_group_topic_info(chat_id, thread_id)
         if existing is not None:
             self._group_topics_seen.add(seen_key)
-            # Only write when we learned a name the config doesn't have yet, or
-            # the topic was renamed in Telegram.
             if not name or existing.get("name") == name:
+                return
+            if existing.get("name") and not authoritative:
                 return
 
         self._group_topics_seen.add(seen_key)
@@ -6870,8 +6884,10 @@ class TelegramAdapter(BasePlatformAdapter):
             # Idempotent: _should_process_message already discovered this topic
             # for inbound messages. Kept so events built by other paths (and
             # tests calling _build_message_event directly) still record it.
-            discovered_name = self._extract_forum_topic_name(message)
-            self._discover_group_topic(str(chat.id), thread_id_str, discovered_name)
+            discovered_name, _authoritative = self._extract_forum_topic_name(message)
+            self._discover_group_topic(
+                str(chat.id), thread_id_str, discovered_name, authoritative=_authoritative
+            )
 
             topic_info = self._get_group_topic_info(str(chat.id), thread_id_str)
             if topic_info:

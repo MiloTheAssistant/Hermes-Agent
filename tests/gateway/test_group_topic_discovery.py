@@ -112,22 +112,23 @@ def _group_message(
 # ── _extract_forum_topic_name ────────────────────────────────────────────
 
 
-def test_extract_name_from_forum_topic_created():
+def test_extract_name_from_forum_topic_created_is_authoritative():
     adapter = _make_adapter()
     msg = _group_message(forum_topic_created=SimpleNamespace(name="briefs"))
 
-    assert adapter._extract_forum_topic_name(msg) == "briefs"
+    assert adapter._extract_forum_topic_name(msg) == ("briefs", True)
 
 
-def test_extract_name_from_forum_topic_edited():
+def test_extract_name_from_forum_topic_edited_is_authoritative():
     adapter = _make_adapter()
     msg = _group_message(forum_topic_edited=SimpleNamespace(name="projects"))
 
-    assert adapter._extract_forum_topic_name(msg) == "projects"
+    assert adapter._extract_forum_topic_name(msg) == ("projects", True)
 
 
-def test_extract_name_from_reply_to_topic_opening_message():
-    """Pre-existing topics get named via the reply anchor, not creation."""
+def test_extract_name_from_reply_anchor_is_not_authoritative():
+    """Pre-existing topics get named via the reply anchor — but that name is
+    frozen at creation time, so it can't be trusted to overwrite."""
     adapter = _make_adapter()
     msg = _group_message(
         reply_to_message=SimpleNamespace(
@@ -135,13 +136,13 @@ def test_extract_name_from_reply_to_topic_opening_message():
         )
     )
 
-    assert adapter._extract_forum_topic_name(msg) == "ideas"
+    assert adapter._extract_forum_topic_name(msg) == ("ideas", False)
 
 
 def test_extract_name_returns_none_for_plain_message():
     adapter = _make_adapter()
 
-    assert adapter._extract_forum_topic_name(_group_message()) is None
+    assert adapter._extract_forum_topic_name(_group_message()) == (None, False)
 
 
 # ── discovery persistence ────────────────────────────────────────────────
@@ -202,12 +203,76 @@ def test_discovery_preserves_operator_skill_binding_on_rename():
     })
     adapter = _make_adapter()
 
-    adapter._discover_group_topic(str(CHAT_ID), "5", "engineering")
+    adapter._discover_group_topic(str(CHAT_ID), "5", "engineering", authoritative=True)
 
     topics = _read_group_topics()[0]["topics"]
     assert topics == [
         {"thread_id": 5, "name": "engineering", "skill": "software-development"}
     ]
+
+
+def test_stale_reply_anchor_never_overwrites_a_known_name():
+    """The bug this guards: every message in a renamed topic carries the
+    topic's creation-time name, which used to revert the rename (and any
+    operator correction) on each message."""
+    _write_config({
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "group_topics": [
+                        {"chat_id": CHAT_ID, "topics": [{"thread_id": 3, "name": "ideas"}]}
+                    ]
+                }
+            }
+        }
+    })
+    adapter = _make_adapter()
+
+    for _ in range(3):
+        adapter._discover_group_topic(str(CHAT_ID), "3", "ieas", authoritative=False)
+
+    assert _read_group_topics()[0]["topics"] == [{"thread_id": 3, "name": "ideas"}]
+
+
+def test_reply_anchor_still_names_a_topic_that_has_none():
+    """Non-authoritative names are how pre-existing topics get named at all —
+    they just can't overwrite."""
+    _write_config({
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "group_topics": [
+                        {"chat_id": CHAT_ID, "topics": [{"thread_id": 3}]}
+                    ]
+                }
+            }
+        }
+    })
+    adapter = _make_adapter()
+
+    adapter._discover_group_topic(str(CHAT_ID), "3", "ideas", authoritative=False)
+
+    assert _read_group_topics()[0]["topics"] == [{"thread_id": 3, "name": "ideas"}]
+
+
+def test_rename_event_does_overwrite_a_known_name():
+    _write_config({
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "group_topics": [
+                        {"chat_id": CHAT_ID, "topics": [{"thread_id": 3, "name": "ieas"}]}
+                    ]
+                }
+            }
+        }
+    })
+    adapter = _make_adapter()
+    msg = _group_message(thread_id=3, forum_topic_edited=SimpleNamespace(name="ideas"))
+
+    adapter._discover_group_topic_from_message(msg)
+
+    assert _read_group_topics()[0]["topics"] == [{"thread_id": 3, "name": "ideas"}]
 
 
 def test_discovery_appends_to_existing_chat_entry():
