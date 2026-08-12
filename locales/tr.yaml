@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Telegram çok oturumlu topic'leri etkin.\n\nBu topic bağımsız bir Hermes oturumu olarak kullanılacak. Bu topic'in mevcut oturumunu değiştirmek için /new kullanın. Paralel çalışma için All Messages'ı açıp orada bir mesaj göndererek başka bir topic oluşturun."
     untitled_session:        "Adsız oturum"
 
+  topics:
+    not_telegram:            "/topics komutu yalnızca Telegram'da kullanılabilir."
+    not_forum:               "Bu sohbette topic yok. Grup ayarlarından Topics'i etkinleştirin, ardından /topics komutunu tekrar gönderin."
+    dm_use_topic:            "/topics bir gruptaki forum topic'lerini listeler. DM'de çoklu oturum topic'lerini yönetmek için /topic kullanın."
+    none_known:              "Bu grupta henüz topic algılanmadı.\n\nHer topic'te bir kez mesaj gönderin — Hermes thread_id'yi otomatik olarak kaydeder ve /topics bunları burada listeler."
+    header:                  "**{chat} içindeki Topics** ({count})"
+    unnamed:                 "(adsız)"
+    current_marker:          "← buradasınız"
+    footer:                  "Bir cron işini topic'e şu şekilde gönderin: `deliver: \"{example}\"`.\nBir skill bağlamak için config.yaml içindeki `platforms.telegram.extra.group_topics` altında topic'e `skill:` ekleyin."
+
   undo:
     nothing:               "Geri alınacak bir şey yok."
     removed:               "↩️ {turns} tur geri alındı ({count} mesaj).\nYedeklendiği yer: \"{preview}\"\nYukarıdaki metni kopyalayıp/düzenleyip göndererek buradan yeniden sorabilirsiniz."

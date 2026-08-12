@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Telegram multi-sessie-onderwerpe is geaktiveer.\n\nHierdie onderwerp sal as 'n onafhanklike Hermes-sessie gebruik word. Gebruik /new om hierdie onderwerp se huidige sessie te vervang. Vir parallelle werk, open All Messages en stuur 'n boodskap daar om 'n ander onderwerp te skep."
     untitled_session:        "Sessie sonder titel"
 
+  topics:
+    not_telegram:            "Die /topics-opdrag is net op Telegram beskikbaar."
+    not_forum:               "Hierdie geselsie het geen topics nie. Aktiveer Topics in die groepinstellings en stuur dan weer /topics."
+    dm_use_topic:            "/topics lys forum-topics in 'n groep. In 'n DM gebruik eerder /topic om multi-sessie-topics te bestuur."
+    none_known:              "Nog geen topics in hierdie groep ontdek nie.\n\nStuur een keer 'n boodskap in elke topic — Hermes teken die thread-ID outomaties aan en /topics sal hulle hier lys."
+    header:                  "**Topics in {chat}** ({count})"
+    unnamed:                 "(naamloos)"
+    current_marker:          "← jy is hier"
+    footer:                  "Stuur 'n cron-taak na 'n topic met `deliver: \"{example}\"`.\nKoppel 'n vaardigheid deur `skill:` by die topic onder `platforms.telegram.extra.group_topics` in config.yaml te voeg."
+
   undo:
     nothing:               "Niks om ongedaan te maak nie."
     removed:               "↩️ {turns} beurt(e) ongedaan gemaak ({count} boodskap(pe)).\nGerugsteun na: \"{preview}\"\nKopieer/wysig die teks hierbo en stuur dit om van hier af weer te vra."

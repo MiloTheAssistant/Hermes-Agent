@@ -306,6 +306,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     thread_ready:            "Многосеансовые Telegram topics включены.\n\nЭтот topic будет использоваться как независимый сеанс Hermes. Используйте /new, чтобы заменить текущий сеанс этого topic. Для параллельной работы откройте All Messages и отправьте там сообщение, чтобы создать другой topic."
     untitled_session:        "Сеанс без названия"
 
+  topics:
+    not_telegram:            "Команда /topics доступна только в Telegram."
+    not_forum:               "В этом чате нет topics. Включите Topics в настройках группы, затем снова отправьте /topics."
+    dm_use_topic:            "/topics выводит forum topics группы. В личных сообщениях используйте /topic для управления многосеансовыми topics."
+    none_known:              "В этой группе пока не обнаружено ни одного topic.\n\nОтправьте по одному сообщению в каждый topic — Hermes автоматически запишет thread_id, и /topics покажет их здесь."
+    header:                  "**Topics в {chat}** ({count})"
+    unnamed:                 "(без названия)"
+    current_marker:          "← вы здесь"
+    footer:                  "Доставить cron-задачу в topic: `deliver: \"{example}\"`.\nЧтобы привязать навык, добавьте `skill:` к topic в разделе `platforms.telegram.extra.group_topics` в config.yaml."
+
   undo:
     nothing:               "Нечего отменять."
     removed:               "↩️ Отменено ходов: {turns} (сообщений: {count}).\nРезервная копия: «{preview}»\nСкопируйте/отредактируйте текст выше и отправьте его, чтобы запросить заново отсюда."
