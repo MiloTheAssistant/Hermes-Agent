@@ -2769,11 +2769,13 @@ class GatewaySlashCommandsMixin:
             return t("gateway.topics.none_known")
 
         chat_label = source.chat_name or str(source.chat_id)
-        lines = [t("gateway.topics.header", chat=chat_label, count=len(topics))]
+        lines = [t("gateway.topics.header", chat=chat_label, count=len(topics)), ""]
         for topic in topics:
             thread_id = topic.get("thread_id")
             name = topic.get("name") or t("gateway.topics.unnamed")
-            row = f"`{thread_id}` — {name}"
+            # Markdown list syntax, not a bare line: chat renderers collapse a
+            # single newline into a space, which runs the whole list together.
+            row = f"- `{thread_id}` — {name}"
             skill = topic.get("skill")
             if skill:
                 row += f" · skill: `{skill}`"

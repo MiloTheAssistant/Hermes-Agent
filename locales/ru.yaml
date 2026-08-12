@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     header:                  "**Topics в {chat}** ({count})"
     unnamed:                 "(без названия)"
     current_marker:          "← вы здесь"
-    footer:                  "Доставить cron-задачу в topic: `deliver: \"{example}\"`.\nЧтобы привязать навык, добавьте `skill:` к topic в разделе `platforms.telegram.extra.group_topics` в config.yaml."
+    footer:                  "Доставить cron-задачу в topic: `deliver: \"{example}\"`.\n\nЧтобы привязать навык, добавьте `skill:` к topic в разделе `platforms.telegram.extra.group_topics` в config.yaml."
 
   undo:
     nothing:               "Нечего отменять."
