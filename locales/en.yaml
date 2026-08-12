@@ -326,7 +326,7 @@ gateway:
     header:                  "**Topics in {chat}** ({count})"
     unnamed:                 "(unnamed)"
     current_marker:          "← you are here"
-    footer:                  "Deliver a cron job to a topic with `deliver: \"{example}\"`.\nBind a skill by adding `skill:` to the topic under `platforms.telegram.extra.group_topics` in config.yaml."
+    footer:                  "Deliver a cron job to a topic with `deliver: \"{example}\"`.\n\nBind a skill by adding `skill:` to the topic under `platforms.telegram.extra.group_topics` in config.yaml."
 
   undo:
     nothing:               "Nothing to undo."

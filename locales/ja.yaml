@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     header:                  "**{chat} の Topics** ({count})"
     unnamed:                 "(名前なし)"
     current_marker:          "← 現在ここ"
-    footer:                  "cron ジョブを topic に配信するには `deliver: \"{example}\"` を使います。\nスキルを紐付けるには、config.yaml の `platforms.telegram.extra.group_topics` にある topic に `skill:` を追加します。"
+    footer:                  "cron ジョブを topic に配信するには `deliver: \"{example}\"` を使います。\n\nスキルを紐付けるには、config.yaml の `platforms.telegram.extra.group_topics` にある topic に `skill:` を追加します。"
 
   undo:
     nothing:               "元に戻せる操作がありません。"

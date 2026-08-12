@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     header:                  "**{chat} 中的 Topics**（{count}）"
     unnamed:                 "(未命名)"
     current_marker:          "← 你在这里"
-    footer:                  "使用 `deliver: \"{example}\"` 将 cron 任务投递到某个 topic。\n如需绑定技能，请在 config.yaml 的 `platforms.telegram.extra.group_topics` 下为该 topic 添加 `skill:`。"
+    footer:                  "使用 `deliver: \"{example}\"` 将 cron 任务投递到某个 topic。\n\n如需绑定技能，请在 config.yaml 的 `platforms.telegram.extra.group_topics` 下为该 topic 添加 `skill:`。"
 
   undo:
     nothing:               "没有可撤销的内容。"

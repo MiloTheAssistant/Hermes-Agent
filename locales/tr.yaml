@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     header:                  "**{chat} içindeki Topics** ({count})"
     unnamed:                 "(adsız)"
     current_marker:          "← buradasınız"
-    footer:                  "Bir cron işini topic'e şu şekilde gönderin: `deliver: \"{example}\"`.\nBir skill bağlamak için config.yaml içindeki `platforms.telegram.extra.group_topics` altında topic'e `skill:` ekleyin."
+    footer:                  "Bir cron işini topic'e şu şekilde gönderin: `deliver: \"{example}\"`.\n\nBir skill bağlamak için config.yaml içindeki `platforms.telegram.extra.group_topics` altında topic'e `skill:` ekleyin."
 
   undo:
     nothing:               "Geri alınacak bir şey yok."

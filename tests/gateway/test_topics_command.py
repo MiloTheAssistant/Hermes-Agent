@@ -66,6 +66,18 @@ class TestHandleTopicsCommand:
         assert "Hermes HQ" in result
 
     @pytest.mark.asyncio
+    async def test_each_topic_is_a_markdown_list_item(self):
+        """Chat renderers collapse a single newline, which would run the whole
+        list onto one line. List syntax keeps the rows separate."""
+        runner = _make_runner(topics=FOUR_TOPICS)
+
+        result = await runner._handle_topics_command(_make_event())
+
+        rows = [line for line in result.splitlines() if line.startswith("- ")]
+        assert len(rows) == 4
+        assert rows[0].startswith("- `2`")
+
+    @pytest.mark.asyncio
     async def test_shows_skill_binding(self):
         runner = _make_runner(topics=FOUR_TOPICS)
 

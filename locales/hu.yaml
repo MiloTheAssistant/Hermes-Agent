@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     header:                  "**Topicok itt: {chat}** ({count})"
     unnamed:                 "(névtelen)"
     current_marker:          "← itt vagy"
-    footer:                  "Cron-feladatot így küldhetsz egy topicba: `deliver: \"{example}\"`.\nSkillt úgy kötsz hozzá, hogy a `skill:` kulcsot beírod a topichoz a config.yaml `platforms.telegram.extra.group_topics` szakaszában."
+    footer:                  "Cron-feladatot így küldhetsz egy topicba: `deliver: \"{example}\"`.\n\nSkillt úgy kötsz hozzá, hogy a `skill:` kulcsot beírod a topichoz a config.yaml `platforms.telegram.extra.group_topics` szakaszában."
 
   undo:
     nothing:               "Nincs mit visszavonni."

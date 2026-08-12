@@ -890,10 +890,11 @@ Send `/topics` in the supergroup to see what Hermes knows:
 
 ```
 **Topics in Hermes HQ** (4)
-`2` — general
-`5` — briefs · skill: morning
-`9` — ideas  ← you are here
-`14` — projects
+
+- `2` — general
+- `5` — briefs · skill: morning
+- `9` — ideas  ← you are here
+- `14` — projects
 
 Deliver a cron job to a topic with `deliver: "telegram:-1001234567890:9"`.
 ```

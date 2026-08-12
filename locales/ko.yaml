@@ -314,7 +314,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     header:                  "**{chat}의 Topics** ({count})"
     unnamed:                 "(이름 없음)"
     current_marker:          "← 현재 위치"
-    footer:                  "cron 작업을 topic으로 보내려면 `deliver: \"{example}\"`를 사용하세요.\n스킬을 연결하려면 config.yaml의 `platforms.telegram.extra.group_topics` 아래 topic에 `skill:`을 추가하세요."
+    footer:                  "cron 작업을 topic으로 보내려면 `deliver: \"{example}\"`를 사용하세요.\n\n스킬을 연결하려면 config.yaml의 `platforms.telegram.extra.group_topics` 아래 topic에 `skill:`을 추가하세요."
 
   undo:
     nothing:               "되돌릴 내용이 없습니다."
