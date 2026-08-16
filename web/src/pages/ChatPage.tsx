@@ -26,7 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -137,8 +137,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
-  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -272,25 +270,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
-
-  const handleCopyLast = () => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Send the slash as a burst, wait long enough for Ink's tokenizer to
-    // emit a keypress event for each character (not coalesce them into a
-    // paste), then send Return as its own event.  The timing here is
-    // empirical — 100ms is safely past Node's default stdin coalescing
-    // window and well inside UI responsiveness.
-    ws.send("/copy");
-    setTimeout(() => {
-      const s = wsRef.current;
-      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
-    }, 100);
-    setCopyState("copied");
-    if (copyResetRef.current) clearTimeout(copyResetRef.current);
-    copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
-    termRef.current?.focus();
-  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -719,10 +698,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
-      if (copyResetRef.current) {
-        clearTimeout(copyResetRef.current);
-        copyResetRef.current = null;
-      }
     };
   }, [channel, resumeParam, scopedProfile]);
 
@@ -783,9 +758,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
   //   terminal wrapper — rounded, dark, padded — the "terminal window"
-  //   floating copy button — bottom-right corner, transparent with a
-  //     subtle border; stays out of the way until hovered.  Sends
-  //     `/copy\n` to Ink, which emits OSC 52 → our clipboard handler.
   //   sidebar — ChatSidebar opens its own JSON-RPC sidecar; renders
   //     model badge, tool-call list, model picker. Best-effort: if the
   //     sidecar fails to connect the terminal pane keeps working.
@@ -895,30 +867,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
         </div>
 
         {!narrow && (
