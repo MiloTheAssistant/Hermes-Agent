@@ -74,6 +74,26 @@ def test_successful_switch_snapshots_complete_override_provenance(monkeypatch):
     }
 
 
+def test_failed_switch_restores_auxiliary_binding_fields():
+    """Client construction rollback restores every switch-owned binding field."""
+    agent = _make_agent_openrouter()
+    agent.requested_provider = "openrouter"
+    agent.acp_command = "old-command"
+    agent.acp_args = ["--old"]
+    agent.max_tokens = 100
+    agent._create_openai_client = MagicMock(side_effect=RuntimeError("build failed"))
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        with pytest.raises(RuntimeError, match="build failed"):
+            agent.switch_model(
+                new_model="new", new_provider="custom", api_key="key",
+                base_url="https://remote.example/v1", api_mode="chat_completions",
+                acp_command="new-command", acp_args=["--new"], max_tokens=200,
+            )
+    assert (agent.acp_command, agent.acp_args, agent.max_tokens) == (
+        "old-command", ["--old"], 100
+    )
+
+
 def _make_agent_anthropic():
     """Agent on native anthropic with a sentinel anthropic client."""
     agent = AIAgent.__new__(AIAgent)

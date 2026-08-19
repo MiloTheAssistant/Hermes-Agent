@@ -6026,11 +6026,33 @@ class AIAgent:
         prior_api_key = self.api_key
         prior_base_url = self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
+        prior_caller_overrides = copy.deepcopy(
+            getattr(self, "_caller_request_overrides", {}) or {}
+        )
+        prior_provider_overrides = copy.deepcopy(
+            getattr(self, "_provider_request_overrides", {}) or {}
+        )
+        candidate_provider_overrides = {}
+        try:
+            from agent.agent_init import _provider_request_overrides_for_route
+            from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+
+            candidate_provider_overrides = _provider_request_overrides_for_route(
+                requested_provider=getattr(self, "requested_provider", "") or self.provider,
+                provider=self.provider,
+                model=self.model,
+                base_url=base_url,
+                custom_providers=get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            logger.debug("env refresh provider-layer resolution failed", exc_info=True)
 
         self.api_key = api_key
         self.base_url = base_url
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        if hasattr(self, "_set_provider_request_overrides"):
+            self._set_provider_request_overrides(candidate_provider_overrides)
         # A base-url change moves the route: TLS material and default
         # headers derived from the old endpoint must be recomputed, exactly
         # as on credential-pool rotation.
@@ -6044,6 +6066,10 @@ class AIAgent:
             self.base_url = prior_base_url
             self._client_kwargs.clear()
             self._client_kwargs.update(prior_client_kwargs)
+            if hasattr(self, "_set_caller_request_overrides"):
+                self._set_caller_request_overrides(prior_caller_overrides)
+            if hasattr(self, "_set_provider_request_overrides"):
+                self._set_provider_request_overrides(prior_provider_overrides)
             return False
 
         # Rebind the pool entry id to the key we just adopted. Leaving a
@@ -6438,15 +6464,19 @@ class AIAgent:
             from agent.agent_init import _provider_request_overrides_for_route
             from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
 
-            self._set_provider_request_overrides(_provider_request_overrides_for_route(
+            provider_layer = _provider_request_overrides_for_route(
                 requested_provider=getattr(self, "requested_provider", "") or self.provider,
                 provider=self.provider,
                 model=self.model,
                 base_url=self.base_url,
                 custom_providers=get_compatible_custom_providers(load_config_readonly()),
-            ))
+            )
+            if hasattr(self, "_set_provider_request_overrides"):
+                self._set_provider_request_overrides(provider_layer)
         except Exception:
-            logger.debug("credential rotation provider-layer refresh skipped", exc_info=True)
+            logger.debug("credential rotation provider-layer refresh failed", exc_info=True)
+            if hasattr(self, "_set_provider_request_overrides"):
+                self._set_provider_request_overrides({})
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
         self._reapply_route_client_config(route_changed=route_changed)

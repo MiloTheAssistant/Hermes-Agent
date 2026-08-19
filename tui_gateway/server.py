@@ -4790,9 +4790,11 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=snapshot.get("model", ""),
             new_provider=snapshot.get("provider", ""),
+            requested_provider=snapshot.get("requested_provider") or snapshot.get("provider", ""),
             api_key=snapshot.get("api_key", ""),
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
+            provider_request_overrides=snapshot.get("provider_request_overrides") or {},
         )
         if requested_provider:
             agent.requested_provider = requested_provider
@@ -4854,11 +4856,25 @@ def _apply_model_switch(
         current_model = getattr(agent, "model", "") or ""
         current_base_url = getattr(agent, "base_url", "") or ""
         current_api_key = getattr(agent, "api_key", "") or ""
+        current_requested_provider = getattr(agent, "requested_provider", "") or current_provider
+        current_provider_request_overrides = copy.deepcopy(
+            getattr(agent, "_provider_request_overrides", {}) or {}
+        )
+        current_credential_pool = getattr(agent, "_credential_pool", None)
+        current_command = getattr(agent, "acp_command", "") or ""
+        current_args = copy.deepcopy(getattr(agent, "acp_args", []) or [])
+        current_max_output_tokens = getattr(agent, "max_tokens", None)
     else:
         current_model = _resolve_model()
         current_provider = explicit_provider.strip()
         current_base_url = ""
         current_api_key = ""
+        current_requested_provider = current_provider
+        current_provider_request_overrides = {}
+        current_credential_pool = None
+        current_command = ""
+        current_args = []
+        current_max_output_tokens = None
         if not explicit_provider:
             runtime = resolve_runtime_provider(requested=None)
             current_provider = str(runtime.get("provider", "") or "")
@@ -4898,6 +4914,12 @@ def _apply_model_switch(
         explicit_provider=explicit_provider,
         user_providers=user_provs,
         custom_providers=custom_provs,
+        current_requested_provider=current_requested_provider,
+        current_provider_request_overrides=current_provider_request_overrides,
+        current_credential_pool=current_credential_pool,
+        current_command=current_command,
+        current_args=current_args,
+        current_max_output_tokens=current_max_output_tokens,
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")

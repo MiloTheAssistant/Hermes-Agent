@@ -8721,9 +8721,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self.agent.switch_model(
                     new_model=self.model,
                     new_provider=self.provider,
+                    requested_provider=(resolved_runtime or {}).get(
+                        "requested_provider", self.requested_provider or self.provider
+                    ),
                     api_key=self.api_key or "",
                     base_url=self.base_url or "",
                     api_mode=self.api_mode or "",
+                    provider_request_overrides=(resolved_runtime or {}).get(
+                        "provider_request_overrides", (resolved_runtime or {}).get("request_overrides", {})
+                    ),
+                    credential_pool=(resolved_runtime or {}).get("credential_pool"),
+                    acp_command=(resolved_runtime or {}).get("command"),
+                    acp_args=(resolved_runtime or {}).get("args"),
+                    max_tokens=(resolved_runtime or {}).get("max_output_tokens"),
                 )
                 if resolved_runtime is not None:
                     resolved_requested = resolved_runtime.get("requested_provider")
@@ -9642,19 +9652,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     current_api_key=self.api_key or "",
                     is_global=False,
                     explicit_provider=_config_provider or "",
+                    current_requested_provider=getattr(self, "requested_provider", ""),
+                    current_provider_request_overrides=copy.deepcopy(
+                        getattr(getattr(self, "agent", None), "_provider_request_overrides", {}) or {}
+                    ),
+                    current_credential_pool=getattr(getattr(self, "agent", None), "_credential_pool", None),
+                    current_command=getattr(getattr(self, "agent", None), "acp_command", ""),
+                    current_args=copy.deepcopy(getattr(getattr(self, "agent", None), "acp_args", []) or []),
+                    current_max_output_tokens=getattr(getattr(self, "agent", None), "max_tokens", None),
                 )
                 if _reset_result.success:
                     if self.agent:
                         self.agent.switch_model(
                             new_model=_reset_result.new_model,
-                            new_provider=_reset_result.target_provider,
+                            new_provider=_reset_result.provider or _reset_result.target_provider,
+                            requested_provider=_reset_result.requested_provider or _reset_result.target_provider,
                             api_key=_reset_result.api_key,
                             base_url=_reset_result.base_url,
                             api_mode=_reset_result.api_mode,
+                            provider_request_overrides=_reset_result.provider_request_overrides,
+                            credential_pool=_reset_result.credential_pool,
+                            acp_command=_reset_result.command,
+                            acp_args=_reset_result.args,
+                            max_tokens=_reset_result.max_output_tokens,
                         )
                     self.model = _reset_result.new_model
-                    self.provider = _reset_result.target_provider
-                    self.requested_provider = _reset_result.target_provider
+                    self.provider = _reset_result.provider or _reset_result.target_provider
+                    self.requested_provider = _reset_result.requested_provider or _reset_result.target_provider
                     self._explicit_api_key = _reset_result.api_key
                     self._explicit_base_url = _reset_result.base_url
                     if _reset_result.api_key:
@@ -10502,6 +10526,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None,
+            "agent_provider_request_overrides": copy.deepcopy(
+                getattr(agent, "_provider_request_overrides", {}) or {}
+            ) if agent is not None else {},
         }
 
     def _restore_model_runtime_snapshot(self, snapshot: dict | None) -> None:
@@ -10541,9 +10568,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 agent.switch_model(
                     new_model=snapshot.get("model", ""),
                     new_provider=snapshot.get("provider", ""),
+                    requested_provider=snapshot.get("requested_provider") or snapshot.get("provider", ""),
                     api_key=snapshot.get("api_key", ""),
                     base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
+                    provider_request_overrides=snapshot.get("agent_provider_request_overrides") or {},
                 )
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
@@ -10811,6 +10840,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
+                    current_requested_provider=getattr(self, "requested_provider", ""),
+                    current_provider_request_overrides=copy.deepcopy(
+                        getattr(getattr(self, "agent", None), "_provider_request_overrides", {}) or {}
+                    ),
+                    current_credential_pool=getattr(getattr(self, "agent", None), "_credential_pool", None),
+                    current_command=getattr(getattr(self, "agent", None), "acp_command", ""),
+                    current_args=copy.deepcopy(getattr(getattr(self, "agent", None), "acp_args", []) or []),
+                    current_max_output_tokens=getattr(getattr(self, "agent", None), "max_tokens", None),
                 )
                 # Capture before close — picker state is cleared on close.
                 _picker_custom_provs = state.get("custom_provs")
@@ -10954,6 +10991,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            current_requested_provider=getattr(self, "requested_provider", ""),
+            current_provider_request_overrides=copy.deepcopy(
+                getattr(getattr(self, "agent", None), "_provider_request_overrides", {}) or {}
+            ),
+            current_credential_pool=getattr(getattr(self, "agent", None), "_credential_pool", None),
+            current_command=getattr(getattr(self, "agent", None), "acp_command", ""),
+            current_args=copy.deepcopy(getattr(getattr(self, "agent", None), "acp_args", []) or []),
+            current_max_output_tokens=getattr(getattr(self, "agent", None), "max_tokens", None),
         )
 
         if not result.success:
@@ -11026,8 +11071,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_mode": self.api_mode,
         }
         self.model = result.new_model
-        self.provider = result.target_provider
-        self.requested_provider = result.target_provider
+        self.provider = result.provider or result.target_provider
+        self.requested_provider = result.requested_provider or result.target_provider
         # Always overwrite explicit overrides so stale credentials from the
         # previous provider (e.g. Ollama api_key/base_url) don't leak into
         # the new provider's credential resolution on the next turn.
@@ -11045,10 +11090,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 self.agent.switch_model(
                     new_model=result.new_model,
-                    new_provider=result.target_provider,
+                    new_provider=result.provider or result.target_provider,
+                    requested_provider=result.requested_provider or result.target_provider,
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    provider_request_overrides=result.provider_request_overrides,
+                    credential_pool=result.credential_pool,
+                    acp_command=result.command,
+                    acp_args=result.args,
+                    max_tokens=result.max_output_tokens,
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a

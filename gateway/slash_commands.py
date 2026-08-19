@@ -16,6 +16,7 @@ call time (run.py fully loaded by then), avoiding an import cycle.
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import inspect
@@ -25,6 +26,7 @@ import re
 import shlex
 import sys
 import time
+from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -54,6 +56,48 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+
+
+def _safe_durable_model_override(binding: dict) -> dict:
+    """Return the non-secret persistence projection of a live switch binding."""
+    base_url = binding.get("base_url")
+    safe_url = ""
+    if isinstance(base_url, str) and base_url.strip():
+        try:
+            parts = urlsplit(base_url)
+            if parts.scheme and parts.hostname:
+                port = f":{parts.port}" if parts.port else ""
+                safe_url = urlunsplit(
+                    (parts.scheme, f"{parts.hostname}{port}", parts.path, "", "")
+                )
+        except (TypeError, ValueError):
+            pass
+    return {
+        "model": binding.get("model"),
+        "provider": binding.get("provider"),
+        "base_url": safe_url or None,
+    }
+
+
+def _current_switch_binding(runner, session_key: str, fallback_provider: str) -> dict:
+    """Read the live binding for selector fallback without mutating cache state."""
+    entry = None
+    lock = getattr(runner, "_agent_cache_lock", None)
+    cache = getattr(runner, "_agent_cache", None)
+    if lock is not None and cache is not None:
+        with lock:
+            entry = cache.get(session_key)
+    agent = entry[0] if entry and entry[0] is not None else None
+    return {
+        "requested_provider": getattr(agent, "requested_provider", "") or fallback_provider,
+        "provider_request_overrides": copy.deepcopy(
+            getattr(agent, "_provider_request_overrides", {}) or {}
+        ),
+        "credential_pool": getattr(agent, "_credential_pool", None),
+        "command": getattr(agent, "acp_command", "") or "",
+        "args": copy.deepcopy(getattr(agent, "acp_args", []) or []),
+        "max_output_tokens": getattr(agent, "max_tokens", None),
+    }
 
 
 def _clean_str(value: Any) -> str:
@@ -1900,6 +1944,9 @@ class GatewaySlashCommandsMixin:
                         # can fall through to a synchronous models.dev HTTP fetch
                         # (requests.get, 15s timeout) on a cold/expired cache,
                         # which freezes the gateway otherwise. See #20525, #41289.
+                        _current_binding = _current_switch_binding(
+                            _self, _session_key, _cur_provider
+                        )
                         result = await asyncio.to_thread(
                             _switch_model,
                             raw_input=model_id,
@@ -1911,6 +1958,12 @@ class GatewaySlashCommandsMixin:
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
+                            current_requested_provider=_current_binding["requested_provider"],
+                            current_provider_request_overrides=_current_binding["provider_request_overrides"],
+                            current_credential_pool=_current_binding["credential_pool"],
+                            current_command=_current_binding["command"],
+                            current_args=_current_binding["args"],
+                            current_max_output_tokens=_current_binding["max_output_tokens"],
                         )
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
@@ -2011,10 +2064,18 @@ class GatewaySlashCommandsMixin:
                         )
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
-                            "provider": result.target_provider,
+                            "provider": result.provider or result.target_provider,
+                            "requested_provider": result.requested_provider or result.target_provider,
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "provider_request_overrides": copy.deepcopy(
+                                result.provider_request_overrides or {}
+                            ),
+                            "credential_pool": result.credential_pool,
+                            "command": result.command,
+                            "args": list(result.args or []),
+                            "max_tokens": result.max_output_tokens,
                         }
 
                         # Write-through the non-secret parts to the session
@@ -2023,7 +2084,14 @@ class GatewaySlashCommandsMixin:
                         try:
                             await _self.async_session_store.set_model_override(
                                 _session_key,
-                                _self._session_model_overrides[_session_key],
+                                _safe_durable_model_override(
+                                    _self._session_model_overrides[_session_key]
+                                ),
+                            )
+                            _self.session_store.set_session_metadata(
+                                _session_key,
+                                "model_requested_provider",
+                                result.requested_provider or result.target_provider,
                             )
                         except Exception:
                             logger.debug(
@@ -2215,6 +2283,7 @@ class GatewaySlashCommandsMixin:
         # through to a synchronous models.dev HTTP fetch (requests.get, 15s
         # timeout) on a cold/expired cache, which freezes the gateway
         # otherwise. See #20525, #41289.
+        _current_binding = _current_switch_binding(self, session_key, current_provider)
         result = await asyncio.to_thread(
             _switch_model,
             raw_input=model_input,
@@ -2226,6 +2295,12 @@ class GatewaySlashCommandsMixin:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            current_requested_provider=_current_binding["requested_provider"],
+            current_provider_request_overrides=_current_binding["provider_request_overrides"],
+            current_credential_pool=_current_binding["credential_pool"],
+            current_command=_current_binding["command"],
+            current_args=_current_binding["args"],
+            current_max_output_tokens=_current_binding["max_output_tokens"],
         )
 
         if not result.success:
@@ -2329,10 +2404,18 @@ class GatewaySlashCommandsMixin:
             # Store session override so next agent creation uses the new model
             self._session_model_overrides[session_key] = {
                 "model": result.new_model,
-                "provider": result.target_provider,
+                "provider": result.provider or result.target_provider,
+                "requested_provider": result.requested_provider or result.target_provider,
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
+                "provider_request_overrides": copy.deepcopy(
+                    result.provider_request_overrides or {}
+                ),
+                "credential_pool": result.credential_pool,
+                "command": result.command,
+                "args": list(result.args or []),
+                "max_tokens": result.max_output_tokens,
             }
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):
@@ -2359,7 +2442,14 @@ class GatewaySlashCommandsMixin:
                 try:
                     await self.async_session_store.set_model_override(
                         session_key,
-                        self._session_model_overrides[session_key],
+                        _safe_durable_model_override(
+                            self._session_model_overrides[session_key]
+                        ),
+                    )
+                    self.session_store.set_session_metadata(
+                        session_key,
+                        "model_requested_provider",
+                        result.requested_provider or result.target_provider,
                     )
                 except Exception:
                     logger.debug(

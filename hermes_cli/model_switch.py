@@ -1788,10 +1788,12 @@ def switch_model(
             pass
 
     # --- Direct alias override: use exact base_url from the alias if set ---
+    _alias_changed_endpoint = False
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
+            _alias_changed_endpoint = base_url.rstrip("/") != _da.base_url.rstrip("/")
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
@@ -1942,20 +1944,41 @@ def switch_model(
     if hermes_warn:
         warnings.append(hermes_warn)
 
+    # A direct alias is applied after the initial resolver pass.  Its body
+    # controls must therefore be resolved from the final endpoint, not copied
+    # from the old route.
+    final_provider = str(runtime.get("provider") or target_provider)
+    final_requested = str(
+        runtime.get("requested_provider") or current_requested_provider or target_provider
+    )
+    final_provider_overrides = deepcopy(
+        runtime.get("provider_request_overrides") or runtime.get("request_overrides")
+        or current_provider_request_overrides or {}
+    )
+    if _alias_changed_endpoint:
+        try:
+            from agent.agent_init import _provider_request_overrides_for_route
+
+            final_provider_overrides = _provider_request_overrides_for_route(
+                requested_provider=final_requested,
+                provider=final_provider,
+                model=new_model,
+                base_url=base_url,
+                custom_providers=custom_providers or [],
+            )
+        except Exception:
+            # No exact final route is a safe empty provider layer, never the
+            # pre-alias endpoint's controls.
+            final_provider_overrides = {}
+
     # --- Build result ---
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
         target_provider=target_provider,
-        provider=str(runtime.get("provider") or target_provider),
-        requested_provider=str(
-            runtime.get("requested_provider")
-            or current_requested_provider
-            or target_provider
-        ),
-        provider_request_overrides=deepcopy(runtime.get("request_overrides") or (
-            current_provider_request_overrides or {}
-        )),
+        provider=final_provider,
+        requested_provider=final_requested,
+        provider_request_overrides=final_provider_overrides,
         command=str(runtime.get("command") or current_command or ""),
         args=list(runtime.get("args") or current_args or []),
         credential_pool=runtime.get("credential_pool", current_credential_pool),

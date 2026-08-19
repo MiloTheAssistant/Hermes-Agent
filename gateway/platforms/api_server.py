@@ -41,6 +41,7 @@ Requires:
 """
 
 import asyncio
+import copy
 import errno
 import hashlib
 import hmac
@@ -250,6 +251,8 @@ _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key",
     "base_url",
     "provider",
+    "requested_provider",
+    "provider_request_overrides",
     "api_mode",
     "command",
     "args",
@@ -322,7 +325,12 @@ def _apply_runtime_agent_overrides(
         value = overrides.get(key)
         if value is None:
             continue
-        runtime_kwargs[key] = list(value) if key == "args" and isinstance(value, (list, tuple)) else value
+        if key == "args" and isinstance(value, (list, tuple)):
+            runtime_kwargs[key] = list(value)
+        elif key == "provider_request_overrides":
+            runtime_kwargs[key] = copy.deepcopy(value)
+        else:
+            runtime_kwargs[key] = value
     return runtime_kwargs
 
 

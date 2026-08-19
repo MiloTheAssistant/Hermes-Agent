@@ -36,6 +36,10 @@ def _make_agent(*, provider="openai-api", base_url=DEFAULT_BASE, api_key="sk-old
     agent.base_url = base_url
     agent.api_key = api_key
     agent._client_kwargs = {"base_url": base_url, "api_key": api_key}
+    agent._caller_request_overrides = {}
+    agent._provider_request_overrides = {}
+    agent._request_overrides = {}
+    agent._rebuild_effective_request_overrides()
     agent._fallback_activated = False
     agent._replace_primary_openai_client = MagicMock(return_value=True)
     agent._reapply_route_client_config = MagicMock()

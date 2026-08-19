@@ -41,6 +41,7 @@ import signal
 import threading
 import time
 import traceback
+from urllib.parse import urlsplit, urlunsplit
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -8067,15 +8068,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_id or agent is None or self._session_db is None:
             return
         pending = self._peek_session_state(session_key) if session_key else None
-        if pending and getattr(pending.turn, "pending_one_turn_restore", None) is not None:
+        if pending and getattr(pending.conversation, "one_turn_restore", None) is not None:
             return
         model = getattr(agent, "model", None)
         if not model:
             return
+        raw_base_url = getattr(agent, "base_url", None)
+        safe_base_url = None
+        if isinstance(raw_base_url, str) and raw_base_url.strip():
+            try:
+                parts = urlsplit(raw_base_url)
+                if parts.scheme and parts.hostname:
+                    port = f":{parts.port}" if parts.port else ""
+                    safe_base_url = urlunsplit(
+                        (parts.scheme, f"{parts.hostname}{port}", parts.path, "", "")
+                    )
+            except (TypeError, ValueError):
+                pass
         runtime = {
             "provider": getattr(agent, "provider", None),
             "requested_provider": getattr(agent, "requested_provider", None),
-            "base_url": getattr(agent, "base_url", None),
+            "base_url": safe_base_url,
             "api_mode": getattr(agent, "api_mode", None),
             "fallback_active": bool(getattr(agent, "_fallback_activated", False)),
         }
@@ -25907,6 +25920,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("provider", ""),
                 runtime.get("requested_provider", ""),
                 runtime.get("api_mode", ""),
+                _j.dumps(
+                    runtime.get("provider_request_overrides") or {},
+                    sort_keys=True,
+                    default=str,
+                ),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.

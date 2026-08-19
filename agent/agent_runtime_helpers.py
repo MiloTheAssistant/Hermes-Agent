@@ -1582,6 +1582,14 @@ def restore_primary_runtime(agent) -> bool:
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.requested_provider = rt.get("requested_provider", agent.provider)
+        if hasattr(agent, "_set_caller_request_overrides"):
+            agent._set_caller_request_overrides(
+                copy.deepcopy(rt.get("caller_request_overrides") or {})
+            )
+        if hasattr(agent, "_set_provider_request_overrides"):
+            agent._set_provider_request_overrides(
+                copy.deepcopy(rt.get("provider_request_overrides") or {})
+            )
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -2660,6 +2668,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_base_url",
             "_is_anthropic_oauth",
             "_config_context_length",
+            "acp_command",
+            "acp_args",
+            "max_tokens",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -2685,6 +2696,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     def _restore_snapshot() -> None:
         for _name, _value in _snapshot.items():
+            if _name in {
+                "caller_request_overrides", "provider_request_overrides",
+                "has_override_layers",
+            }:
+                continue
             if _value is _MISSING:
                 # Attribute did not exist before the swap — don't fabricate it.
                 continue

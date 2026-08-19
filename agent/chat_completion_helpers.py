@@ -2797,6 +2797,26 @@ def try_activate_fallback(
 
         old_model = agent.model
         old_provider = agent.provider
+        fb_requested_provider = fb_provider
+        fb_provider_layer = None
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            fb_runtime = resolve_runtime_provider(
+                requested=fb_provider,
+                explicit_api_key=fb_api_key_hint,
+                explicit_base_url=fb_base_url,
+                target_model=fb_model,
+            )
+            fb_provider = str(fb_runtime.get("provider") or fb_provider)
+            fb_requested_provider = str(
+                fb_runtime.get("requested_provider") or fb_requested_provider
+            )
+            fb_provider_layer = fb_runtime.get("provider_request_overrides") or fb_runtime.get(
+                "request_overrides"
+            )
+        except Exception:
+            logger.debug("Fallback route provenance resolution failed", exc_info=True)
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -2804,12 +2824,29 @@ def try_activate_fallback(
         agent._config_context_length = None
         agent.model = fb_model
         agent.provider = fb_provider
-        agent.requested_provider = fb_provider
+        agent.requested_provider = fb_requested_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        try:
+            from agent.agent_init import _provider_request_overrides_for_route
+            from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+
+            agent._set_provider_request_overrides(
+                fb_provider_layer if fb_provider_layer is not None else _provider_request_overrides_for_route(
+                    requested_provider=agent.requested_provider,
+                    provider=agent.provider,
+                    model=agent.model,
+                    base_url=agent.base_url,
+                    custom_providers=get_compatible_custom_providers(load_config_readonly()),
+                )
+            )
+        except Exception:
+            # A fallback cannot safely retain the previous route's body.
+            if hasattr(agent, "_set_provider_request_overrides"):
+                agent._set_provider_request_overrides({})
 
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream

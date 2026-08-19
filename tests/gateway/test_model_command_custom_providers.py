@@ -1,5 +1,10 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
+import json
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import yaml
 import pytest
 
@@ -23,6 +28,71 @@ def _make_event(text="/model"):
         message_type=MessageType.TEXT,
         source=SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"),
     )
+
+
+def test_gateway_runtime_sync_scrubs_endpoint_and_skips_one_turn_durability():
+    """Completed one-turn state must not persist raw endpoint secrets or identity."""
+    class DB:
+        def __init__(self):
+            self.row = {"model": "old", "model_config": None}
+            self.writes = []
+
+        def get_session(self, session_id):
+            assert session_id == "sid"
+            return dict(self.row)
+
+        def update_session_meta(self, session_id, model_config, *, model):
+            self.writes.append((session_id, model_config, model))
+            self.row = {"model": model, "model_config": model_config}
+
+    class Store:
+        def __init__(self):
+            self.metadata = []
+
+        def set_session_metadata(self, *args):
+            self.metadata.append(args)
+
+    runner = _make_runner()
+    runner._session_db = SimpleNamespace(_db=DB())
+    runner.session_store = Store()
+    state = SimpleNamespace(
+        conversation=SimpleNamespace(one_turn_restore=object()),
+        turn=SimpleNamespace(pending_one_turn_restore=None),
+    )
+    runner._peek_session_state = lambda _: state
+    agent = SimpleNamespace(
+        model="new", provider="custom", requested_provider="custom:remote",
+        base_url="https://user:pass@example.test/v1?token=secret#frag",
+        api_mode="chat_completions", _fallback_activated=False,
+    )
+    runner._sync_session_model_from_agent("sid", agent, session_key="key")
+    assert runner._session_db._db.writes == []
+    assert runner.session_store.metadata == []
+
+    state.conversation.one_turn_restore = None
+    runner._sync_session_model_from_agent("sid", agent, session_key="key")
+    persisted = json.loads(runner._session_db._db.row["model_config"])["gateway_runtime"]
+    assert persisted["base_url"] == "https://example.test/v1"
+    assert "secret" not in json.dumps(persisted)
+    assert runner.session_store.metadata == [("key", "model_requested_provider", "custom:remote")]
+
+
+def test_agent_signature_changes_for_provider_owned_body_not_caller_body():
+    runner = _make_runner()
+    common = {
+        "api_key": "key", "base_url": "https://example.test/v1",
+        "provider": "custom", "requested_provider": "custom:remote",
+        "api_mode": "chat_completions",
+    }
+    first = runner._agent_config_signature(
+        "m", {**common, "provider_request_overrides": {"extra_body": {"route": "a"}}},
+        [], "",
+    )
+    second = runner._agent_config_signature(
+        "m", {**common, "provider_request_overrides": {"extra_body": {"route": "b"}}},
+        [], "",
+    )
+    assert first != second
 
 
 @pytest.mark.asyncio

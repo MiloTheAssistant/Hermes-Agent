@@ -42,6 +42,32 @@ from gateway.platforms.api_server import (
 
 
 # ---------------------------------------------------------------------------
+# Runtime route provenance
+# ---------------------------------------------------------------------------
+
+
+def test_request_runtime_override_keeps_requested_identity_and_private_body():
+    """A real API precedence merge must carry the resolver's whole binding."""
+    from gateway.platforms.api_server import _apply_runtime_agent_overrides
+
+    body = {"extra_body": {"route": "remote"}}
+    runtime = {"provider": "openrouter", "requested_provider": "openrouter"}
+    merged = _apply_runtime_agent_overrides(
+        runtime,
+        {
+            "provider": "custom",
+            "requested_provider": "custom:remote",
+            "provider_request_overrides": body,
+        },
+    )
+
+    body["extra_body"]["route"] = "mutated"
+    assert merged["provider"] == "custom"
+    assert merged["requested_provider"] == "custom:remote"
+    assert merged["provider_request_overrides"] == {"extra_body": {"route": "remote"}}
+
+
+# ---------------------------------------------------------------------------
 # check_api_server_requirements
 # ---------------------------------------------------------------------------
 
