@@ -2716,6 +2716,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
+        "provider_request_overrides": copy.deepcopy(
+            runtime.get("request_overrides") or {}
+        ),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -2856,6 +2859,9 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
+        "provider_request_overrides": copy.deepcopy(
+            runtime.get("request_overrides") or {}
+        ),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -2914,6 +2920,9 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "base_url": runtime.get("base_url"),
                     "provider": runtime.get("provider"),
                     "requested_provider": runtime.get("requested_provider"),
+                    "provider_request_overrides": copy.deepcopy(
+                        runtime.get("request_overrides") or {}
+                    ),
                     "api_mode": runtime.get("api_mode"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
@@ -6373,7 +6382,9 @@ class TurnRunner:
                 )
 
         effective_session_id = agent_session_id
-        self._runner._sync_session_model_from_agent(effective_session_id, agent)
+        self._runner._sync_session_model_from_agent(
+            effective_session_id, agent, session_key=ctx.session_key
+        )
         # history_offset=0 whenever the agent's message list no longer has
         # the original history prefix — i.e. on rotation (split) OR in-place
         # compaction. In both cases the returned `messages` is the compacted
@@ -8001,6 +8012,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "requested_provider": runtime_kwargs.get("requested_provider"),
+            "provider_request_overrides": copy.deepcopy(
+                runtime_kwargs.get("provider_request_overrides")
+                or runtime_kwargs.get("request_overrides")
+                or {}
+            ),
             "api_mode": runtime_kwargs.get("api_mode"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
@@ -8014,6 +8030,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 model,
                 runtime["provider"],
                 runtime["requested_provider"],
+                json.dumps(runtime["provider_request_overrides"], sort_keys=True),
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
@@ -8033,7 +8050,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         route["request_overrides"] = overrides or {}
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+    def _sync_session_model_from_agent(
+        self, session_id: str, agent: Any, *, session_key: str | None = None
+    ) -> None:
         """Persist the runtime model/provider actually used by a gateway turn.
 
         Provider fallback can switch ``agent.model``/``agent.provider`` after the
@@ -8047,16 +8066,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_id or agent is None or self._session_db is None:
             return
+        pending = self._peek_session_state(session_key) if session_key else None
+        if pending and getattr(pending.turn, "pending_one_turn_restore", None) is not None:
+            return
         model = getattr(agent, "model", None)
         if not model:
             return
         runtime = {
             "provider": getattr(agent, "provider", None),
+            "requested_provider": getattr(agent, "requested_provider", None),
             "base_url": getattr(agent, "base_url", None),
             "api_mode": getattr(agent, "api_mode", None),
             "fallback_active": bool(getattr(agent, "_fallback_activated", False)),
         }
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
+        requested = runtime.get("requested_provider")
+        if session_key and isinstance(requested, str) and requested.strip():
+            try:
+                self.session_store.set_session_metadata(
+                    session_key, "model_requested_provider", requested.strip()
+                )
+            except Exception:
+                logger.debug("Failed to persist requested provider metadata", exc_info=True)
 
         try:
             db = self._session_db._db
@@ -25925,12 +25956,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         if not persisted:
             return
+        _missing = object()
+        try:
+            requested_marker = store.get_session_metadata(
+                session_key, "model_requested_provider", _missing
+            )
+        except Exception:
+            requested_marker = _missing
+        if requested_marker is not _missing:
+            if not isinstance(requested_marker, str) or not requested_marker.strip() or requested_marker.strip().endswith(":"):
+                raise ValueError("invalid persisted requested_provider")
+            requested = requested_marker.strip()
+        else:
+            requested = persisted.get("provider")
         override: Dict[str, Any] = {
             "model": persisted.get("model"),
             "provider": persisted.get("provider"),
+            "requested_provider": requested,
             "base_url": persisted.get("base_url"),
         }
-        provider = persisted.get("provider")
+        provider = requested
         if provider:
             # Re-resolve credentials for the persisted provider. On failure
             # (e.g. credentials were removed since the switch) keep the
@@ -25941,6 +25986,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                override["provider_request_overrides"] = copy.deepcopy(
+                    runtime.get("provider_request_overrides")
+                    or runtime.get("request_overrides")
+                    or {}
+                )
+                override["requested_provider"] = runtime.get("requested_provider") or requested
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -25971,7 +26022,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in (
+            "provider", "requested_provider", "api_key", "base_url", "api_mode",
+            "credential_pool", "provider_request_overrides",
+        ):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
@@ -25991,7 +26045,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         override = _snap_state.conversation.model_override if _snap_state else None
         return {
             "had_override": override is not None,
-            "override": dict(override) if override is not None else None,
+            "override": copy.deepcopy(override) if override is not None else None,
         }
 
     def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
@@ -25999,7 +26053,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
         if snapshot.get("had_override"):
-            self._session_state(session_key).conversation.model_override = dict(
+            self._session_state(session_key).conversation.model_override = copy.deepcopy(
                 snapshot.get("override") or {}
             )
         else:

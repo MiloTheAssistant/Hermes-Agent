@@ -361,6 +361,12 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
+        "provider_request_overrides": dict(
+            runtime.get("provider_request_overrides")
+            or runtime.get("request_overrides")
+            or {}
+        ),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),

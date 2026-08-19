@@ -2153,6 +2153,7 @@ class CLICommandsMixin:
                     api_key=turn_route["runtime"].get("api_key"),
                     base_url=turn_route["runtime"].get("base_url"),
                     provider=turn_route["runtime"].get("provider"),
+                    requested_provider=turn_route["runtime"].get("requested_provider"),
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
@@ -2167,6 +2168,9 @@ class CLICommandsMixin:
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
+                    provider_request_overrides=turn_route["runtime"].get(
+                        "provider_request_overrides"
+                    ),
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,
                     providers_order=self._providers_order,

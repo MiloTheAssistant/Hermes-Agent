@@ -142,11 +142,20 @@ def _resolve_review_runtime(
         parent_api_mode = "codex_responses"
     parent = {
         "provider": agent.provider,
+        "requested_provider": getattr(agent, "requested_provider", None) or agent.provider,
         "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None,
         "base_url": parent_runtime.get("base_url") or None,
         "api_mode": parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),
+        "caller_request_overrides": copy.deepcopy(
+            getattr(agent, "_caller_request_overrides", {}) or {}
+        ),
+        "provider_request_overrides": copy.deepcopy(
+            getattr(agent, "_provider_request_overrides", {}) or {}
+        ),
+        # Compatibility view for callers that only inspect the resolved route;
+        # construction below uses the two ownership layers above.
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None),
         "command": getattr(agent, "acp_command", None),
@@ -172,11 +181,16 @@ def _resolve_review_runtime(
         )
         return {
             "provider": rp.get("provider") or task_provider,
+            "requested_provider": rp.get("requested_provider") or task_provider,
             "model": rp.get("model") or task_model,
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
             "api_mode": rp.get("api_mode"),
             "credential_pool": rp.get("credential_pool"),
+            "caller_request_overrides": {},
+            "provider_request_overrides": copy.deepcopy(
+                rp.get("request_overrides") or {}
+            ),
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "max_tokens": rp.get("max_output_tokens"),
             "command": rp.get("command"),
@@ -1023,11 +1037,13 @@ def _run_review_in_thread(
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
+                requested_provider=_rt.get("requested_provider") or agent.provider,
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,
                 credential_pool=_rt.get("credential_pool"),
-                request_overrides=_rt.get("request_overrides") or {},
+                request_overrides=_rt.get("caller_request_overrides") or {},
+                provider_request_overrides=_rt.get("provider_request_overrides") or {},
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),

@@ -756,7 +756,8 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
 
     assert meta.get("error") is None, meta.get("error")
     assert captured["kwargs"]["credential_pool"] is fake_pool
-    assert captured["kwargs"]["request_overrides"] == fake_overrides
+    assert captured["kwargs"]["request_overrides"] == {}
+    assert captured["kwargs"]["provider_request_overrides"] == fake_overrides
 
 
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):

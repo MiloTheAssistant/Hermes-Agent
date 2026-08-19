@@ -17,6 +17,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import copy
 import enum
 import contextvars
 import json
@@ -1586,10 +1587,12 @@ def _build_child_agent(
     parent_agent,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
+    override_requested_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
+    override_provider_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
@@ -1939,6 +1942,11 @@ def _build_child_agent(
                 api_key=effective_api_key,
                 model=effective_model,
                 provider=effective_provider,
+                requested_provider=(
+                    override_requested_provider
+                    or (getattr(parent_agent, "requested_provider", None) if not override_provider else effective_provider)
+                    or effective_provider
+                ),
                 api_mode=effective_api_mode,
                 acp_command=effective_acp_command,
                 acp_args=effective_acp_args,
@@ -1968,7 +1976,20 @@ def _build_child_agent(
                 request_overrides=(
                     dict(override_request_overrides or {})
                     if override_provider
-                    else dict(getattr(parent_agent, "request_overrides", {}) or {})
+                    else copy.deepcopy(
+                        getattr(parent_agent, "_caller_request_overrides", {})
+                        if isinstance(getattr(parent_agent, "_caller_request_overrides", {}), dict)
+                        else {}
+                    )
+                ),
+                provider_request_overrides=(
+                    dict(override_provider_request_overrides or {})
+                    if override_provider
+                    else copy.deepcopy(
+                        getattr(parent_agent, "_provider_request_overrides", {})
+                        if isinstance(getattr(parent_agent, "_provider_request_overrides", {}), dict)
+                        else {}
+                    )
                 ),
                 openrouter_min_coding_score=child_openrouter_min_coding_score,
                 tool_progress_callback=child_progress_cb,
@@ -3863,10 +3884,14 @@ def delegate_task(
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],
+                override_requested_provider=creds.get("requested_provider"),
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
                 override_request_overrides=creds.get("request_overrides"),
+                override_provider_request_overrides=creds.get(
+                    "provider_request_overrides"
+                ),
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
@@ -4505,9 +4530,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         return {
             "model": configured_model,
             "provider": provider,
+            "requested_provider": configured_provider or provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "request_overrides": {},
+            "provider_request_overrides": {},
         }
 
     if not configured_provider:
@@ -4515,10 +4543,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         return {
             "model": configured_model,
             "provider": None,
+            "requested_provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
             "request_overrides": None,
+            "provider_request_overrides": None,
             "max_output_tokens": None,
         }
 
@@ -4559,10 +4589,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     return {
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider") or configured_provider,
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
+        "provider_request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),

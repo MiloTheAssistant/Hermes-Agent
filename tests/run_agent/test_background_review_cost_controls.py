@@ -8,6 +8,7 @@ Covers the two behaviors this change adds:
 
 Pure-function / config-driven; no live model calls.
 """
+from copy import deepcopy
 from typing import Any
 from unittest.mock import patch
 
@@ -86,6 +87,48 @@ def test_unrouted_runtime_keeps_parent_pool_and_overrides():
     assert rt["credential_pool"] == "parent-pool"
     assert rt["request_overrides"] == {"service_tier": "priority"}
     assert rt["max_tokens"] == 4096
+
+
+def test_inherited_review_runtime_copies_both_parent_layers():
+    """An inheriting review fork must not launder the effective override map."""
+    agent = _FakeAgent()
+    agent.requested_provider = "custom:parent"
+    agent._caller_request_overrides = {"extra_body": {"caller": "parent"}}
+    agent._provider_request_overrides = {"extra_body": {"route": "parent"}}
+    with patch("hermes_cli.config.load_config", return_value={}), patch(
+        "hermes_cli.config.load_config_readonly", return_value={}
+    ):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["requested_provider"] == "custom:parent"
+    assert rt["caller_request_overrides"] == {"extra_body": {"caller": "parent"}}
+    assert rt["provider_request_overrides"] == {"extra_body": {"route": "parent"}}
+    rt["caller_request_overrides"]["extra_body"]["caller"] = "child"
+    rt["provider_request_overrides"]["extra_body"]["route"] = "child"
+    assert agent._caller_request_overrides == {"extra_body": {"caller": "parent"}}
+    assert agent._provider_request_overrides == {"extra_body": {"route": "parent"}}
+
+
+def test_routed_review_runtime_does_not_launder_effective_map():
+    agent = _FakeAgent()
+    agent.requested_provider = "custom:parent"
+    agent._caller_request_overrides = {"service_tier": "priority"}
+    agent._provider_request_overrides = {"extra_body": {"route": "parent"}}
+    cfg = {"auxiliary": {"background_review": {
+        "provider": "custom:review", "model": "review-model",
+    }}}
+    resolved = {
+        "provider": "custom", "requested_provider": "custom:review",
+        "api_key": "review-key", "base_url": "https://review.example/v1",
+        "api_mode": "chat_completions",
+        "request_overrides": {"extra_body": {"route": "review"}},
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "hermes_cli.config.load_config_readonly", return_value=cfg
+    ), patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=deepcopy(resolved)):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["requested_provider"] == "custom:review"
+    assert rt["caller_request_overrides"] == {}
+    assert rt["provider_request_overrides"] == {"extra_body": {"route": "review"}}
 
 
 def test_routing_same_model_as_parent_is_not_routed():
