@@ -6434,6 +6434,19 @@ class AIAgent:
 
         self.api_key = runtime_key
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+        try:
+            from agent.agent_init import _provider_request_overrides_for_route
+            from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+
+            self._set_provider_request_overrides(_provider_request_overrides_for_route(
+                requested_provider=getattr(self, "requested_provider", "") or self.provider,
+                provider=self.provider,
+                model=self.model,
+                base_url=self.base_url,
+                custom_providers=get_compatible_custom_providers(load_config_readonly()),
+            ))
+        except Exception:
+            logger.debug("credential rotation provider-layer refresh skipped", exc_info=True)
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
         self._reapply_route_client_config(route_changed=route_changed)

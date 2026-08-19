@@ -1344,6 +1344,14 @@ def try_recover_primary_transport(
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.requested_provider = rt.get("requested_provider", agent.provider)
+        if hasattr(agent, "_set_caller_request_overrides"):
+            agent._set_caller_request_overrides(
+                copy.deepcopy(rt.get("caller_request_overrides") or {})
+            )
+        if hasattr(agent, "_set_provider_request_overrides"):
+            agent._set_provider_request_overrides(
+                copy.deepcopy(rt.get("provider_request_overrides") or {})
+            )
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -2664,6 +2672,16 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     _snapshot["_credential_pool_entry_id"] = getattr(
         agent, "_credential_pool_entry_id", _MISSING
     )
+    _snapshot["caller_request_overrides"] = copy.deepcopy(
+        getattr(agent, "_caller_request_overrides", {}) or {}
+    )
+    _snapshot["provider_request_overrides"] = copy.deepcopy(
+        getattr(agent, "_provider_request_overrides", {}) or {}
+    )
+    _snapshot["has_override_layers"] = (
+        hasattr(agent, "_caller_request_overrides")
+        and hasattr(agent, "_provider_request_overrides")
+    )
 
     def _restore_snapshot() -> None:
         for _name, _value in _snapshot.items():
@@ -2674,6 +2692,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 setattr(agent, _name, _value)
             except Exception:  # noqa: BLE001
                 pass
+        if _snapshot["has_override_layers"] and hasattr(agent, "_set_caller_request_overrides"):
+            agent._set_caller_request_overrides(_snapshot["caller_request_overrides"])
+        if _snapshot["has_override_layers"] and hasattr(agent, "_set_provider_request_overrides"):
+            agent._set_provider_request_overrides(_snapshot["provider_request_overrides"])
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -2973,6 +2995,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "model": agent.model,
         "provider": agent.provider,
         "requested_provider": agent.requested_provider,
+        "caller_request_overrides": copy.deepcopy(
+            getattr(agent, "_caller_request_overrides", {}) or {}
+        ),
+        "provider_request_overrides": copy.deepcopy(
+            getattr(agent, "_provider_request_overrides", {}) or {}
+        ),
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

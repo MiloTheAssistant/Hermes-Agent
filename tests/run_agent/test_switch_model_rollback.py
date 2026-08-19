@@ -50,6 +50,30 @@ def _make_agent_openrouter():
     return agent
 
 
+def test_successful_switch_snapshots_complete_override_provenance(monkeypatch):
+    agent = _make_agent_openrouter()
+    agent.requested_provider = "openrouter"
+    agent._caller_request_overrides = {"speed": "fast"}
+    agent._provider_request_overrides = {"extra_body": {"route": "old"}}
+    agent._request_overrides = {}
+    agent._rebuild_effective_request_overrides()
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="new-model", new_provider="custom",
+            requested_provider="custom:remote",
+            provider_request_overrides={"extra_body": {"route": "new"}},
+            api_key="new-key", base_url="https://remote.example/v1",
+            api_mode="chat_completions",
+        )
+    assert agent._primary_runtime["requested_provider"] == "custom:remote"
+    assert agent._primary_runtime["caller_request_overrides"] == {"speed": "fast"}
+    assert agent._primary_runtime["provider_request_overrides"] == {
+        "extra_body": {"route": "new"}
+    }
+
+
 def _make_agent_anthropic():
     """Agent on native anthropic with a sentinel anthropic client."""
     agent = AIAgent.__new__(AIAgent)
