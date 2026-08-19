@@ -1,6 +1,7 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
 import json
+import threading
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -93,6 +94,92 @@ def test_agent_signature_changes_for_provider_owned_body_not_caller_body():
         [], "",
     )
     assert first != second
+
+
+def test_second_gateway_switch_after_cache_eviction_keeps_complete_binding():
+    """The second selector reads the first switch's session binding, not custom."""
+    from gateway.slash_commands import _current_switch_binding
+
+    runner = _make_runner()
+    session_key = "agent:main:two-switches"
+    first_switch = {
+        "model": "first-model",
+        "provider": "custom",
+        "requested_provider": "custom:remote",
+        "api_key": "ephemeral-only",
+        "base_url": "https://remote.example/v1",
+        "api_mode": "chat_completions",
+        "provider_request_overrides": {"extra_body": {"route": "remote"}},
+        "credential_pool": "remote-pool",
+        "command": "remote-command",
+        "args": ["--remote"],
+        "max_tokens": 4096,
+    }
+    # A successful first /model records this map and evicts the live agent.
+    runner._session_model_overrides[session_key] = deepcopy(first_switch)
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+
+    second_switch_current = _current_switch_binding(runner, session_key, "custom")
+    second_switch_current["provider_request_overrides"]["extra_body"]["route"] = "mutated"
+    second_switch_current["args"].append("--mutated")
+
+    assert second_switch_current == {
+        "requested_provider": "custom:remote",
+        "provider_request_overrides": {"extra_body": {"route": "mutated"}},
+        "credential_pool": "remote-pool",
+        "command": "remote-command",
+        "args": ["--remote", "--mutated"],
+        "max_output_tokens": 4096,
+    }
+    # Session state remains the unmodified first-switch binding for later use.
+    assert runner._session_model_overrides[session_key] == first_switch
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("ftp://example.test/v1", ""),
+        ("HTTP://Example.TEST:80/v1", "http://example.test/v1"),
+        ("HTTPS://Example.TEST:443/v1", "https://example.test/v1"),
+        ("http://[::1]:80/v1?token=secret#frag", "http://[::1]/v1"),
+        ("https://user:pass@Example.TEST:8443/v1?token=secret#frag", "https://example.test:8443/v1"),
+    ],
+)
+def test_gateway_durable_endpoint_call_sites_project_identically(raw, expected):
+    """SQLite runtime and model override durability use the same safe URL."""
+    from gateway.slash_commands import _safe_durable_model_override
+
+    class DB:
+        def __init__(self):
+            self.row = {"model": "old", "model_config": None}
+
+        def get_session(self, _):
+            return dict(self.row)
+
+        def update_session_meta(self, _, model_config, *, model):
+            self.row = {"model": model, "model_config": model_config}
+
+    runner = _make_runner()
+    runner._session_db = SimpleNamespace(_db=DB())
+    runner.session_store = SimpleNamespace(set_session_metadata=lambda *_: None)
+    runner._peek_session_state = lambda _: SimpleNamespace(
+        conversation=SimpleNamespace(one_turn_restore=None)
+    )
+    runner._sync_session_model_from_agent(
+        "sid",
+        SimpleNamespace(
+            model="m", provider="custom", requested_provider="custom:remote",
+            base_url=raw, api_mode="chat_completions", _fallback_activated=False,
+        ),
+        session_key="key",
+    )
+    runtime = json.loads(runner._session_db._db.row["model_config"])["gateway_runtime"]
+    override = _safe_durable_model_override(
+        {"model": "m", "provider": "custom", "base_url": raw}
+    )
+    assert runtime.get("base_url", "") == expected
+    assert (override.get("base_url") or "") == expected
 
 
 @pytest.mark.asyncio

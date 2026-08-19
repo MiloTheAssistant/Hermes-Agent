@@ -68,6 +68,28 @@ from agent.turn_context import (
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
+
+def _persistable_runtime_base_url(value: Any) -> str:
+    """Project a runtime endpoint into its safe durable representation."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if scheme not in {"http", "https"} or not hostname:
+        return ""
+    host = hostname.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port is not None and (scheme, port) not in {("http", 80), ("https", 443)}:
+        host = f"{host}:{port}"
+    return urlunsplit((scheme, host, parsed.path, "", ""))
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -8073,18 +8095,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         model = getattr(agent, "model", None)
         if not model:
             return
-        raw_base_url = getattr(agent, "base_url", None)
-        safe_base_url = None
-        if isinstance(raw_base_url, str) and raw_base_url.strip():
-            try:
-                parts = urlsplit(raw_base_url)
-                if parts.scheme and parts.hostname:
-                    port = f":{parts.port}" if parts.port else ""
-                    safe_base_url = urlunsplit(
-                        (parts.scheme, f"{parts.hostname}{port}", parts.path, "", "")
-                    )
-            except (TypeError, ValueError):
-                pass
+        safe_base_url = _persistable_runtime_base_url(
+            getattr(agent, "base_url", None)
+        )
         runtime = {
             "provider": getattr(agent, "provider", None),
             "requested_provider": getattr(agent, "requested_provider", None),

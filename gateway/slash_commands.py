@@ -26,7 +26,6 @@ import re
 import shlex
 import sys
 import time
-from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -60,18 +59,9 @@ _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 def _safe_durable_model_override(binding: dict) -> dict:
     """Return the non-secret persistence projection of a live switch binding."""
-    base_url = binding.get("base_url")
-    safe_url = ""
-    if isinstance(base_url, str) and base_url.strip():
-        try:
-            parts = urlsplit(base_url)
-            if parts.scheme and parts.hostname:
-                port = f":{parts.port}" if parts.port else ""
-                safe_url = urlunsplit(
-                    (parts.scheme, f"{parts.hostname}{port}", parts.path, "", "")
-                )
-        except (TypeError, ValueError):
-            pass
+    from gateway.run import _persistable_runtime_base_url
+
+    safe_url = _persistable_runtime_base_url(binding.get("base_url"))
     return {
         "model": binding.get("model"),
         "provider": binding.get("provider"),
@@ -88,15 +78,45 @@ def _current_switch_binding(runner, session_key: str, fallback_provider: str) ->
         with lock:
             entry = cache.get(session_key)
     agent = entry[0] if entry and entry[0] is not None else None
+    if agent is not None:
+        return {
+            "requested_provider": getattr(agent, "requested_provider", "") or fallback_provider,
+            "provider_request_overrides": copy.deepcopy(
+                getattr(agent, "_provider_request_overrides", {}) or {}
+            ),
+            "credential_pool": getattr(agent, "_credential_pool", None),
+            "command": getattr(agent, "acp_command", "") or "",
+            "args": copy.deepcopy(getattr(agent, "acp_args", []) or []),
+            "max_output_tokens": getattr(agent, "max_tokens", None),
+        }
+    override = None
+    overrides = getattr(runner, "_session_model_overrides", None)
+    if isinstance(overrides, dict):
+        override = overrides.get(session_key)
+    if not isinstance(override, dict):
+        try:
+            state = runner._peek_session_state(session_key)
+            override = getattr(getattr(state, "conversation", None), "model_override", None)
+        except Exception:
+            override = None
+    if isinstance(override, dict):
+        return {
+            "requested_provider": override.get("requested_provider") or fallback_provider,
+            "provider_request_overrides": copy.deepcopy(
+                override.get("provider_request_overrides") or {}
+            ),
+            "credential_pool": override.get("credential_pool"),
+            "command": override.get("command") or "",
+            "args": copy.deepcopy(override.get("args") or []),
+            "max_output_tokens": override.get("max_tokens"),
+        }
     return {
-        "requested_provider": getattr(agent, "requested_provider", "") or fallback_provider,
-        "provider_request_overrides": copy.deepcopy(
-            getattr(agent, "_provider_request_overrides", {}) or {}
-        ),
-        "credential_pool": getattr(agent, "_credential_pool", None),
-        "command": getattr(agent, "acp_command", "") or "",
-        "args": copy.deepcopy(getattr(agent, "acp_args", []) or []),
-        "max_output_tokens": getattr(agent, "max_tokens", None),
+        "requested_provider": fallback_provider,
+        "provider_request_overrides": {},
+        "credential_pool": None,
+        "command": "",
+        "args": [],
+        "max_output_tokens": None,
     }
 
 
