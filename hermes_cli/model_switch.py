@@ -24,7 +24,8 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
@@ -467,6 +468,13 @@ class ModelSwitchResult:
     success: bool
     new_model: str = ""
     target_provider: str = ""
+    provider: str = ""
+    requested_provider: str = ""
+    provider_request_overrides: dict[str, Any] = field(default_factory=dict)
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    credential_pool: Any = None
+    max_output_tokens: Optional[int] = None
     provider_changed: bool = False
     api_key: str = ""
     base_url: str = ""
@@ -1297,6 +1305,12 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    current_requested_provider: str = "",
+    current_provider_request_overrides: dict[str, Any] | None = None,
+    current_credential_pool: Any = None,
+    current_command: str = "",
+    current_args: list[str] | None = None,
+    current_max_output_tokens: Optional[int] = None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -1689,6 +1703,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    runtime: dict[str, Any] = {}
 
     if provider_changed or explicit_provider:
         import os
@@ -1932,6 +1947,19 @@ def switch_model(
         success=True,
         new_model=new_model,
         target_provider=target_provider,
+        provider=str(runtime.get("provider") or target_provider),
+        requested_provider=str(
+            runtime.get("requested_provider")
+            or current_requested_provider
+            or target_provider
+        ),
+        provider_request_overrides=deepcopy(runtime.get("request_overrides") or (
+            current_provider_request_overrides or {}
+        )),
+        command=str(runtime.get("command") or current_command or ""),
+        args=list(runtime.get("args") or current_args or []),
+        credential_pool=runtime.get("credential_pool", current_credential_pool),
+        max_output_tokens=runtime.get("max_output_tokens", current_max_output_tokens),
         provider_changed=provider_changed,
         api_key=api_key,
         base_url=base_url,

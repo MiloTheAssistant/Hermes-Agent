@@ -1946,10 +1946,16 @@ class GatewaySlashCommandsMixin:
                             try:
                                 cached_entry[0].switch_model(
                                     new_model=result.new_model,
-                                    new_provider=result.target_provider,
+                                    new_provider=result.provider or result.target_provider,
+                                    requested_provider=result.requested_provider or result.target_provider,
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    provider_request_overrides=result.provider_request_overrides,
+                                    credential_pool=result.credential_pool,
+                                    acp_command=result.command,
+                                    acp_args=result.args,
+                                    max_tokens=result.max_output_tokens,
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -2259,10 +2265,16 @@ class GatewaySlashCommandsMixin:
                 try:
                     cached_entry[0].switch_model(
                         new_model=result.new_model,
-                        new_provider=result.target_provider,
+                        new_provider=result.provider or result.target_provider,
+                        requested_provider=result.requested_provider or result.target_provider,
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        provider_request_overrides=result.provider_request_overrides,
+                        credential_pool=result.credential_pool,
+                        acp_command=result.command,
+                        acp_args=result.args,
+                        max_tokens=result.max_output_tokens,
                     )
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working

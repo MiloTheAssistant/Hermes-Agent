@@ -547,3 +547,16 @@ def test_oneshot_real_agent_forwards_complete_remote_named_ollama_binding(tmp_pa
     sdk_client.chat.completions.create.assert_not_called()
     openai_factory.assert_called_once()
     _assert_real_agent_probe_guards(constructor_probes)
+def test_complete_model_switch_result_preserves_runtime_binding():
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    result = ModelSwitchResult(
+        success=True, new_model="synthetic", target_provider="display",
+        provider="custom", requested_provider="custom:remote",
+        provider_request_overrides={"extra_body": {"route": "remote"}},
+        command="synthetic-command", args=["--synthetic"],
+        credential_pool="synthetic-pool", max_output_tokens=4096,
+    )
+    assert result.provider == "custom"
+    assert result.requested_provider == "custom:remote"
+    assert result.provider_request_overrides == {"extra_body": {"route": "remote"}}

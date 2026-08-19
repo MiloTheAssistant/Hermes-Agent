@@ -10643,8 +10643,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "api_mode": self.api_mode,
         }
         self.model = result.new_model
-        self.provider = result.target_provider
-        self.requested_provider = result.target_provider
+        self.provider = result.provider or result.target_provider
+        self.requested_provider = result.requested_provider or result.target_provider
         # Always overwrite explicit overrides so stale credentials from the
         # previous provider (e.g. Ollama api_key/base_url) don't leak into
         # the new provider's credential resolution on the next turn.
@@ -10661,10 +10661,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             try:
                 self.agent.switch_model(
                     new_model=result.new_model,
-                    new_provider=result.target_provider,
+                    new_provider=result.provider or result.target_provider,
+                    requested_provider=result.requested_provider or result.target_provider,
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    provider_request_overrides=result.provider_request_overrides,
+                    credential_pool=result.credential_pool,
+                    acp_command=result.command,
+                    acp_args=result.args,
+                    max_tokens=result.max_output_tokens,
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.

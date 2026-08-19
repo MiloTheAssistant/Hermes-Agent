@@ -914,10 +914,14 @@ class AIAgent:
             return_load_result=True,
         )
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', *, requested_provider=None, provider_request_overrides=None, credential_pool=None, acp_command=None, acp_args=None, max_tokens=None):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode,
+                            requested_provider=requested_provider,
+                            provider_request_overrides=provider_request_overrides,
+                            credential_pool=credential_pool, acp_command=acp_command,
+                            acp_args=acp_args, max_tokens=max_tokens)
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.

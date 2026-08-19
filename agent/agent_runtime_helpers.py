@@ -2586,7 +2586,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode='', *, requested_provider=None, provider_request_overrides=None, credential_pool=None, acp_command=None, acp_args=None, max_tokens=None):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2684,7 +2684,17 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
-        agent.requested_provider = new_provider
+        agent.requested_provider = requested_provider or new_provider
+        if provider_request_overrides is not None and hasattr(agent, "_set_provider_request_overrides"):
+            agent._set_provider_request_overrides(provider_request_overrides)
+        if credential_pool is not None:
+            agent._credential_pool = credential_pool
+        if acp_command is not None:
+            agent.acp_command = acp_command
+        if acp_args is not None:
+            agent.acp_args = list(acp_args)
+        if max_tokens is not None:
+            agent.max_tokens = max_tokens
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
         # (old provider's) URL — that silently pairs the new provider label
