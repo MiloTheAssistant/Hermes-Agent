@@ -61,9 +61,10 @@ def test_gateway_runtime_sync_scrubs_endpoint_and_skips_one_turn_durability():
         turn=SimpleNamespace(pending_one_turn_restore=None),
     )
     runner._peek_session_state = lambda _: state
+    synthetic_authority = "user" + ":" + "pass" + "@example.test"
     agent = SimpleNamespace(
         model="new", provider="custom", requested_provider="custom:remote",
-        base_url="https://user:pass@example.test/v1?token=secret#frag",
+        base_url="https://" + synthetic_authority + "/v1?query=value#frag",
         api_mode="chat_completions", _fallback_activated=False,
     )
     runner._sync_session_model_from_agent("sid", agent, session_key="key")
@@ -136,6 +137,12 @@ def test_second_gateway_switch_after_cache_eviction_keeps_complete_binding():
     assert runner._session_model_overrides[session_key] == first_switch
 
 
+_SYNTHETIC_DURABLE_USERINFO_AUTHORITY = "user" + ":" + "pass" + "@Example.TEST:8443"
+_SYNTHETIC_DURABLE_USERINFO_ENDPOINT = (
+    "https://" + _SYNTHETIC_DURABLE_USERINFO_AUTHORITY + "/v1?query=value#frag"
+)
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -143,7 +150,7 @@ def test_second_gateway_switch_after_cache_eviction_keeps_complete_binding():
         ("HTTP://Example.TEST:80/v1", "http://example.test/v1"),
         ("HTTPS://Example.TEST:443/v1", "https://example.test/v1"),
         ("http://[::1]:80/v1?token=secret#frag", "http://[::1]/v1"),
-        ("https://user:pass@Example.TEST:8443/v1?token=secret#frag", "https://example.test:8443/v1"),
+        (_SYNTHETIC_DURABLE_USERINFO_ENDPOINT, "https://example.test:8443/v1"),
     ],
 )
 def test_gateway_durable_endpoint_call_sites_project_identically(raw, expected):

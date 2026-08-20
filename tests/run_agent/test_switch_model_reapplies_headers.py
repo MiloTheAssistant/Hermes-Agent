@@ -83,3 +83,35 @@ def test_switch_away_from_headered_provider_clears_stale_headers(mock_ctx_len):
     headers = agent._client_kwargs.get("default_headers") or {}
     assert "HTTP-Referer" not in headers
     assert "X-Title" not in headers
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_switch_preserves_complete_provenance_while_reapplying_headers(mock_ctx_len):
+    """A real switch keeps caller and route layers separate at the new endpoint."""
+    agent = _make_agent(provider="copilot", base_url="https://api.githubcopilot.com")
+    agent.requested_provider = "custom:primary"
+    agent._caller_request_overrides = {"speed": "fast"}
+    agent._provider_request_overrides = {"extra_body": {"route": "primary"}}
+    agent._rebuild_effective_request_overrides()
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    agent.switch_model(
+        "remote-model",
+        "custom",
+        requested_provider="custom:remote",
+        provider_request_overrides={"extra_body": {"route": "remote"}},
+        api_key="synthetic-key",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+    )
+
+    assert (agent.provider, agent.requested_provider) == ("custom", "custom:remote")
+    assert agent._caller_request_overrides == {"speed": "fast"}
+    assert agent._provider_request_overrides == {"extra_body": {"route": "remote"}}
+    assert agent.request_overrides == {
+        "speed": "fast",
+        "extra_body": {"route": "remote"},
+    }
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["HTTP-Referer"]
+    assert headers["X-Title"]

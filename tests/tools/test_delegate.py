@@ -15,8 +15,10 @@ import threading
 import time
 import types
 import unittest
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
+from run_agent import AIAgent as RealAIAgent
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -55,6 +57,34 @@ def _make_mock_parent(depth=0):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     return parent
+
+
+def _install_task3_constructor_guards(monkeypatch):
+    probes = {
+        "context": MagicMock(return_value=262_144),
+        "endpoint": MagicMock(
+            side_effect=AssertionError("constructor endpoint probe forbidden")
+        ),
+        "local": MagicMock(
+            side_effect=AssertionError("constructor local-service probe forbidden")
+        ),
+    }
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length", probes["context"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata", probes["endpoint"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.detect_local_server_type", probes["local"]
+    )
+    return probes
+
+
+def _assert_task3_constructor_guards(probes):
+    probes["context"].assert_called()
+    probes["endpoint"].assert_not_called()
+    probes["local"].assert_not_called()
 
 
 class TestDelegateRequirements(unittest.TestCase):
@@ -2086,6 +2116,60 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     _resolve_delegation_credentials(cfg, parent)
         self.assertIn("missing-acp-binary", str(ctx.exception))
+
+
+def test_inheriting_child_deep_copies_both_override_layers(tmp_path, monkeypatch):
+    """The actual child constructor receives independent caller and route maps."""
+    import run_agent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(run_agent, "OpenAI", MagicMock(return_value=MagicMock()))
+    constructor_probes = _install_task3_constructor_guards(monkeypatch)
+    parent = _make_mock_parent()
+    parent.provider = "custom"
+    parent.requested_provider = "custom:parent"
+    parent.base_url = "https://parent.example/v1"
+    parent.api_key = "synthetic-key"
+    parent.api_mode = "chat_completions"
+    parent.model = "parent-model"
+    parent.enabled_toolsets = ["terminal"]
+    parent.disabled_toolsets = []
+    parent._caller_request_overrides = {"speed": "fast"}
+    parent._provider_request_overrides = {"extra_body": {"route": "parent"}}
+    parent.max_tokens = 1024
+    captured = {}
+
+    def construct(*args, **kwargs):
+        captured["requested_provider"] = kwargs["requested_provider"]
+        captured["caller_layer"] = deepcopy(kwargs["request_overrides"])
+        captured["provider_layer"] = deepcopy(kwargs["provider_request_overrides"])
+        child = RealAIAgent(*args, **kwargs)
+        captured["child"] = child
+        return child
+
+    monkeypatch.setattr(run_agent, "AIAgent", construct)
+    child = _build_child_agent(
+        task_index=0,
+        goal="synthetic delegated task",
+        context=None,
+        toolsets=None,
+        model=None,
+        max_iterations=3,
+        parent_agent=parent,
+        task_count=1,
+    )
+
+    assert isinstance(child, RealAIAgent)
+    assert captured["requested_provider"] == "custom:parent"
+    assert captured["caller_layer"] == {"speed": "fast"}
+    assert captured["provider_layer"] == {"extra_body": {"route": "parent"}}
+    assert child._caller_request_overrides == {"speed": "fast"}
+    assert child._provider_request_overrides == {"extra_body": {"route": "parent"}}
+    child._caller_request_overrides["speed"] = "slow"
+    child._provider_request_overrides["extra_body"]["route"] = "child-only"
+    assert parent._caller_request_overrides == {"speed": "fast"}
+    assert parent._provider_request_overrides == {"extra_body": {"route": "parent"}}
+    _assert_task3_constructor_guards(constructor_probes)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,11 @@ from __future__ import annotations
 
 import importlib
 import sys
+import types
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
+
+from run_agent import AIAgent as RealAIAgent
 
 
 def _make_cli():
@@ -65,6 +69,42 @@ def _make_cli():
             _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
         ):
             return _cli_mod.HermesCLI()
+
+
+def _install_task3_constructor_guards(monkeypatch):
+    probes = {
+        "context": MagicMock(return_value=262_144),
+        "endpoint": MagicMock(
+            side_effect=AssertionError("constructor endpoint probe forbidden")
+        ),
+        "local": MagicMock(
+            side_effect=AssertionError("constructor local-service probe forbidden")
+        ),
+    }
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length", probes["context"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata", probes["endpoint"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.detect_local_server_type", probes["local"]
+    )
+    return probes
+
+
+def _assert_task3_constructor_guards(probes):
+    probes["context"].assert_called()
+    probes["endpoint"].assert_not_called()
+    probes["local"].assert_not_called()
+
+
+class _InlineThread:
+    def __init__(self, target, **_kwargs):
+        self.target = target
+
+    def start(self):
+        self.target()
 
 
 class TestBackgroundInlineDetector:
@@ -130,3 +170,88 @@ class TestBackgroundBusyPolicyContract:
         for alias in ("bg", "btw"):
             cmd = resolve_command(alias)
             assert cmd is not None and cmd.name == "background"
+
+
+def test_background_constructor_receives_complete_route_binding(tmp_path, monkeypatch):
+    """The real /background consumer preserves both route ownership layers."""
+    import cli as cli_mod
+    import run_agent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(run_agent, "OpenAI", MagicMock(return_value=MagicMock()))
+    constructor_probes = _install_task3_constructor_guards(monkeypatch)
+    cli_instance = _make_cli()
+    cli_instance._background_task_counter = 0
+    cli_instance._background_tasks = {}
+    cli_instance._agent_running = False
+    cli_instance._app = None
+    cli_instance._spinner_text = ""
+    cli_instance._sudo_password_callback = None
+    cli_instance._approval_callback = None
+    cli_instance._secret_capture_callback = None
+    cli_instance._session_db = None
+    cli_instance.max_turns = 3
+    cli_instance.enabled_toolsets = ["terminal"]
+    cli_instance.reasoning_config = None
+    cli_instance.service_tier = None
+    cli_instance._providers_only = None
+    cli_instance._providers_ignore = None
+    cli_instance._providers_order = None
+    cli_instance._provider_sort = None
+    cli_instance._provider_require_params = None
+    cli_instance._provider_data_collection = None
+    cli_instance._openrouter_min_coding_score = None
+    cli_instance._fallback_model = None
+    cli_instance.final_response_markdown = False
+    cli_instance.bell_on_complete = False
+    cli_instance._scrollback_box_width = lambda: 80
+    cli_instance._ensure_runtime_credentials = lambda: True
+    cli_instance._resolve_turn_agent_config = lambda _prompt: {
+        "model": "synthetic-model",
+        "runtime": {
+            "provider": "custom",
+            "requested_provider": "ollama",
+            "api_key": "synthetic-key",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_mode": "chat_completions",
+            "provider_request_overrides": {"extra_body": {"route": "provider"}},
+            "credential_pool": None,
+            "command": None,
+            "args": [],
+            "max_tokens": 1024,
+        },
+        "request_overrides": {"speed": "fast"},
+    }
+    captured = {}
+
+    def construct(*args, **kwargs):
+        captured["kwargs"] = deepcopy(kwargs)
+        agent = RealAIAgent(*args, **kwargs)
+        captured["agent"] = agent
+        agent.run_conversation = MagicMock(
+            return_value={"final_response": "synthetic response", "messages": []}
+        )
+        return agent
+
+    monkeypatch.setattr(cli_mod, "AIAgent", construct)
+    # The command mixin owns the scheduler seam.  Replacing its module-local
+    # reference keeps the real AIAgent constructor's own thread facilities
+    # intact while running the background consumer synchronously here.
+    monkeypatch.setattr(
+        "hermes_cli.cli_commands_mixin.threading", types.SimpleNamespace(Thread=_InlineThread)
+    )
+    monkeypatch.setattr(cli_mod, "ChatConsole", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_args, **_kwargs: None)
+    cli_instance._handle_background_command("/background synthetic prompt")
+
+    child = captured["agent"]
+    assert isinstance(child, RealAIAgent)
+    assert captured["kwargs"]["provider"] == "custom"
+    assert captured["kwargs"]["requested_provider"] == "ollama"
+    assert child._caller_request_overrides == {"speed": "fast"}
+    assert child._provider_request_overrides == {"extra_body": {"route": "provider"}}
+    child._provider_request_overrides["extra_body"]["route"] = "child-only"
+    assert cli_instance._resolve_turn_agent_config("x")["runtime"][
+        "provider_request_overrides"
+    ]["extra_body"]["route"] == "provider"
+    _assert_task3_constructor_guards(constructor_probes)

@@ -2,8 +2,11 @@
 
 import asyncio
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+
+from run_agent import AIAgent as RealAIAgent
 
 from plugins.platforms.feishu.feishu_comment import (
     parse_drive_comment_event,
@@ -37,6 +40,34 @@ def _make_event(
             "to_user_id": {"open_id": to_open_id},
         },
     })
+
+
+def _install_task3_constructor_guards(monkeypatch):
+    probes = {
+        "context": Mock(return_value=262_144),
+        "endpoint": Mock(
+            side_effect=AssertionError("constructor endpoint probe forbidden")
+        ),
+        "local": Mock(
+            side_effect=AssertionError("constructor local-service probe forbidden")
+        ),
+    }
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length", probes["context"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata", probes["endpoint"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.detect_local_server_type", probes["local"]
+    )
+    return probes
+
+
+def _assert_task3_constructor_guards(probes):
+    probes["context"].assert_called()
+    probes["endpoint"].assert_not_called()
+    probes["local"].assert_not_called()
 
 
 class TestParseEvent(unittest.TestCase):
@@ -136,6 +167,62 @@ class TestWikiReverseLookup(unittest.TestCase):
         query_dict = dict(queries)
         self.assertEqual(query_dict["token"], "docx_abc")
         self.assertEqual(query_dict["obj_type"], "docx")
+
+
+def test_feishu_comment_forwards_complete_runtime_binding(tmp_path, monkeypatch):
+    """The Feishu comment consumer constructs a real, route-bound agent."""
+    import run_agent
+    from plugins.platforms.feishu import feishu_comment
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(run_agent, "OpenAI", Mock(return_value=Mock()))
+    constructor_probes = _install_task3_constructor_guards(monkeypatch)
+    provider_layer = {"extra_body": {"route": "feishu-provider"}}
+    runtime = {
+        "provider": "custom",
+        "requested_provider": "custom:feishu",
+        "api_key": "synthetic-key",
+        "base_url": "https://feishu.example/v1",
+        "api_mode": "chat_completions",
+        "credential_pool": None,
+        "command": None,
+        "args": [],
+        "request_overrides": deepcopy(provider_layer),
+    }
+    captured = {}
+
+    def construct(*args, **kwargs):
+        captured["kwargs"] = deepcopy(kwargs)
+        agent = RealAIAgent(*args, **kwargs)
+        captured["agent"] = agent
+        agent.run_conversation = Mock(
+            return_value={"final_response": "synthetic reply", "messages": []}
+        )
+        return agent
+
+    monkeypatch.setattr(run_agent, "AIAgent", construct)
+    monkeypatch.setattr(
+        feishu_comment,
+        "_resolve_model_and_runtime",
+        lambda: ("feishu-model", deepcopy(runtime)),
+    )
+
+    response = feishu_comment._run_comment_agent(
+        "synthetic comment", Mock(), session_key="comment-doc:docx:token"
+    )
+
+    child = captured["agent"]
+    assert response == "synthetic reply"
+    assert isinstance(child, RealAIAgent)
+    assert captured["kwargs"]["requested_provider"] == "custom:feishu"
+    assert child._caller_request_overrides == {}
+    assert child._provider_request_overrides == provider_layer
+    child._provider_request_overrides["extra_body"]["route"] = "child-only"
+    assert runtime["request_overrides"]["extra_body"]["route"] == "feishu-provider"
+    child.run_conversation.assert_called_once_with(
+        "synthetic comment", conversation_history=None
+    )
+    _assert_task3_constructor_guards(constructor_probes)
 
 
 if __name__ == "__main__":

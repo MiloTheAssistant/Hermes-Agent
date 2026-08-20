@@ -6,6 +6,7 @@ advancement through multiple providers.
 """
 
 import json
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -467,3 +468,93 @@ class TestFallbackChainDedup:
         assert called == [("xai", "grok-4.5")]
         assert agent.provider == "xai"
         assert agent.model == "grok-4.5"
+
+
+def test_fallback_and_primary_restore_round_trip_both_layers(tmp_path, monkeypatch):
+    """Real fallback activation and recovery retain each ownership layer."""
+    fallback_url = "https://fallback.example/v1"
+    fallback_config = {
+        "custom_providers": [
+            {
+                "name": "fallback",
+                "base_url": fallback_url,
+                "api_key": "synthetic-fallback-key",
+                "extra_body": {"route": "fallback"},
+            }
+        ]
+    }
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    agent = _make_agent(
+        fallback_model=[
+            {
+                "provider": "custom:fallback",
+                "model": "fallback-model",
+                "base_url": fallback_url,
+                "api_key": "synthetic-fallback-key",
+            }
+        ]
+    )
+    agent.requested_provider = "custom:primary"
+    agent._caller_request_overrides = {"speed": "fast"}
+    agent._provider_request_overrides = {"extra_body": {"route": "primary"}}
+    agent._rebuild_effective_request_overrides()
+    agent._primary_runtime.update(
+        {
+            "requested_provider": "custom:primary",
+            "caller_request_overrides": {"speed": "fast"},
+            "provider_request_overrides": {"extra_body": {"route": "primary"}},
+        }
+    )
+    primary = {
+        "provider": agent.provider,
+        "requested_provider": "custom:primary",
+        "base_url": agent.base_url,
+        "caller": deepcopy(agent._caller_request_overrides),
+        "provider_layer": deepcopy(agent._provider_request_overrides),
+        "effective": deepcopy(agent.request_overrides),
+    }
+    fallback_client = _mock_client(base_url=fallback_url, api_key="synthetic-fallback-key")
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    with (
+        patch(
+            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+            return_value=None,
+        ),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fallback_client, "fallback-model"),
+        ),
+        patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=lambda model, _provider: model,
+        ),
+        patch("hermes_cli.config.load_config", return_value=fallback_config),
+        patch("hermes_cli.config.load_config_readonly", return_value=fallback_config),
+        patch("agent.credential_pool.load_pool", return_value=None),
+    ):
+        assert agent._try_activate_fallback() is True
+        assert (agent.provider, agent.requested_provider) == (
+            "custom:fallback",
+            "custom:fallback",
+        )
+        assert agent._caller_request_overrides == {"speed": "fast"}
+        assert agent._provider_request_overrides == {"extra_body": {"route": "fallback"}}
+        assert agent.request_overrides == {
+            "speed": "fast",
+            "extra_body": {"route": "fallback"},
+        }
+        agent._rate_limited_until = 0
+        primary_client = MagicMock(name="RestoredPrimaryClient")
+        agent._create_openai_client = MagicMock(return_value=primary_client)
+        assert agent._restore_primary_runtime() is True
+
+    assert agent.client is primary_client
+    assert {
+        "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
+        "base_url": agent.base_url,
+        "caller": agent._caller_request_overrides,
+        "provider_layer": agent._provider_request_overrides,
+        "effective": agent.request_overrides,
+    } == primary

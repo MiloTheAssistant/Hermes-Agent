@@ -4971,18 +4971,39 @@ def _apply_model_switch(
 
     if agent:
         try:
+            # ``ModelSwitchResult`` grew route-provenance fields after the TUI
+            # consumer (and a few extension callers) had already started
+            # supplying result-shaped objects.  Keep real results complete,
+            # while treating fields absent from those legacy objects as an
+            # instruction to retain the agent's current binding rather than
+            # failing the switch or silently clearing route state.
+            switched_provider = getattr(result, "provider", "") or result.target_provider
+            switched_requested_provider = (
+                getattr(result, "requested_provider", "") or result.target_provider
+            )
+            switched_request_overrides = getattr(
+                result, "provider_request_overrides", current_provider_request_overrides
+            )
+            switched_credential_pool = getattr(
+                result, "credential_pool", current_credential_pool
+            )
+            switched_command = getattr(result, "command", current_command)
+            switched_args = getattr(result, "args", current_args)
+            switched_max_output_tokens = getattr(
+                result, "max_output_tokens", current_max_output_tokens
+            )
             agent.switch_model(
                 new_model=result.new_model,
-                new_provider=result.provider or result.target_provider,
-                requested_provider=result.requested_provider or result.target_provider,
+                new_provider=switched_provider,
+                requested_provider=switched_requested_provider,
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
-                provider_request_overrides=result.provider_request_overrides,
-                credential_pool=result.credential_pool,
-                acp_command=result.command,
-                acp_args=result.args,
-                max_tokens=result.max_output_tokens,
+                provider_request_overrides=switched_request_overrides,
+                credential_pool=switched_credential_pool,
+                acp_command=switched_command,
+                acp_args=switched_args,
+                max_tokens=switched_max_output_tokens,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working

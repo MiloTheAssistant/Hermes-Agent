@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import copy
 import concurrent.futures
 import dataclasses
 import faulthandler

@@ -11,7 +11,37 @@ roughly the full uncached system-prompt cost per nudge (~26% end-to-end on
 Sonnet 4.5 per the contributor's measurement).
 """
 
-from unittest.mock import patch
+import threading as stdlib_threading
+from copy import deepcopy
+from unittest.mock import MagicMock, patch
+
+
+def _install_task3_constructor_guards(monkeypatch):
+    probes = {
+        "context": MagicMock(return_value=262_144),
+        "endpoint": MagicMock(
+            side_effect=AssertionError("constructor endpoint probe forbidden")
+        ),
+        "local": MagicMock(
+            side_effect=AssertionError("constructor local-service probe forbidden")
+        ),
+    }
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length", probes["context"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata", probes["endpoint"]
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.detect_local_server_type", probes["local"]
+    )
+    return probes
+
+
+def _assert_task3_constructor_guards(probes):
+    probes["context"].assert_called()
+    probes["endpoint"].assert_not_called()
+    probes["local"].assert_not_called()
 
 
 def _make_agent_stub(agent_cls):
@@ -340,3 +370,147 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
             f"Routed review fork was passed parent-only kwarg {_gated!r}; "
             "cache-parity inheritance must stay behind the not-routed gate."
         )
+
+
+def test_provenance_only_review_clone_keeps_complete_cache_prefix_identical(
+    tmp_path, monkeypatch
+):
+    """A same-route review fork is a real child with byte-identical request inputs."""
+    import run_agent
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    from agent.transports.codex import ResponsesApiTransport
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(run_agent, "OpenAI", MagicMock(return_value=MagicMock()))
+    constructor_probes = _install_task3_constructor_guards(monkeypatch)
+    tool_schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "synthetic_tool",
+                "description": "synthetic schema",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        run_agent, "get_tool_definitions", lambda **_kwargs: deepcopy(tool_schemas)
+    )
+    parent = _make_agent_stub(run_agent.AIAgent)
+    parent.provider = "custom"
+    parent.requested_provider = "custom:remote"
+    parent.base_url = "https://remote.example/v1"
+    parent.api_key = "synthetic-key"
+    parent.api_mode = "chat_completions"
+    parent._caller_request_overrides = {"temperature": 0.25}
+    parent._provider_request_overrides = {"extra_body": {"route": "provider"}}
+    parent._request_overrides = {
+        "temperature": 0.25,
+        "extra_body": {"route": "provider"},
+    }
+    parent.tools = deepcopy(tool_schemas)
+    messages_snapshot = [
+        {"role": "user", "content": "first user bytes"},
+        {"role": "assistant", "content": "assistant bytes"},
+        {"role": "user", "content": "second user bytes"},
+    ]
+    captured = {}
+    real_agent = run_agent.AIAgent
+
+    def construct(*args, **kwargs):
+        captured["init_kwargs"] = deepcopy(kwargs)
+        child = real_agent(*args, **kwargs)
+        captured["child"] = child
+
+        def record_run(*_args, **run_kwargs):
+            captured["run_kwargs"] = deepcopy(run_kwargs)
+            raise RuntimeError("provider-free stop after clone capture")
+
+        child.run_conversation = record_run
+        return child
+
+    class _RunAgentThreadingProxy:
+        Thread = _SyncThread
+
+        def __getattr__(self, name):
+            return getattr(stdlib_threading, name)
+
+    with patch.object(run_agent, "AIAgent", construct), patch.object(
+        run_agent, "threading", _RunAgentThreadingProxy()
+    ):
+        parent._spawn_background_review(
+            messages_snapshot=deepcopy(messages_snapshot),
+            review_memory=True,
+            review_skills=False,
+        )
+
+    child = captured["child"]
+    assert isinstance(child, real_agent)
+    assert child.requested_provider == "custom:remote"
+    assert child._caller_request_overrides == {"temperature": 0.25}
+    assert child._provider_request_overrides == {"extra_body": {"route": "provider"}}
+    assert child._cached_system_prompt == parent._cached_system_prompt
+    assert child.ephemeral_system_prompt == parent.ephemeral_system_prompt
+    assert child.prefill_messages == parent.prefill_messages
+    assert child.prefill_messages is not parent.prefill_messages
+    assert child.tools == parent.tools == tool_schemas
+    assert captured["run_kwargs"]["conversation_history"] == messages_snapshot
+
+    parent_system = (
+        parent._cached_system_prompt + "\n\n" + parent.ephemeral_system_prompt
+    ).strip()
+    child_system = (
+        child._cached_system_prompt + "\n\n" + child.ephemeral_system_prompt
+    ).strip()
+    parent_messages = [
+        {"role": "system", "content": parent_system},
+        *deepcopy(parent.prefill_messages),
+        *deepcopy(messages_snapshot),
+    ]
+    child_messages = [
+        {"role": "system", "content": child_system},
+        *deepcopy(child.prefill_messages),
+        *deepcopy(captured["run_kwargs"]["conversation_history"]),
+    ]
+    assert child_messages == parent_messages
+    chat = ChatCompletionsTransport()
+    assert chat.build_kwargs(
+        "synthetic-model",
+        child_messages,
+        child.tools,
+        request_overrides=deepcopy(child.request_overrides),
+        session_id="cache-scope-root",
+        cache_scope_id="cache-scope-root",
+        supports_prompt_cache_key=True,
+    ) == chat.build_kwargs(
+        "synthetic-model",
+        parent_messages,
+        parent.tools,
+        request_overrides=deepcopy(parent.request_overrides),
+        session_id="cache-scope-root",
+        cache_scope_id="cache-scope-root",
+        supports_prompt_cache_key=True,
+    )
+    responses = ResponsesApiTransport()
+    assert responses.build_kwargs(
+        "synthetic-model",
+        child_messages,
+        child.tools,
+        instructions=child_system,
+        request_overrides=deepcopy(child.request_overrides),
+        session_id="cache-scope-root",
+        cache_scope_id="cache-scope-root",
+        provider="custom",
+        base_url="https://remote.example/v1",
+    ) == responses.build_kwargs(
+        "synthetic-model",
+        parent_messages,
+        parent.tools,
+        instructions=parent_system,
+        request_overrides=deepcopy(parent.request_overrides),
+        session_id="cache-scope-root",
+        cache_scope_id="cache-scope-root",
+        provider="custom",
+        base_url="https://remote.example/v1",
+    )
+    _assert_task3_constructor_guards(constructor_probes)
