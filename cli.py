@@ -76,6 +76,7 @@ from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
 from agent.interrupt_compat import request_hard_interrupt
+from tools.thread_context import propagate_context_to_thread
 
 # prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
@@ -15971,7 +15972,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # finishes; reset on the next turn.
             self._prompt_start_time = time.time()
             self._prompt_duration = 0.0
-            agent_thread = threading.Thread(target=run_agent, daemon=True)
+            agent_thread = threading.Thread(
+                target=propagate_context_to_thread(run_agent), daemon=True
+            )
             agent_thread.start()
 
             # Ambient "thinking" sound: calm bubble blips while the agent
@@ -20167,22 +20170,39 @@ def main(
     
     parsed_skills = _parse_skills_argument(skills)
 
-    # Create CLI instance
-    cli = HermesCLI(
-        model=model,
-        toolsets=toolsets_list,
-        provider=provider,
-        reasoning=reasoning,
-        api_key=api_key,
-        base_url=base_url,
-        max_turns=max_turns,
-        verbose=verbose,
-        compact=compact,
-        resume=resume,
-        checkpoints=checkpoints,
-        pass_session_id=pass_session_id,
-        ignore_rules=ignore_rules,
-    )
+    # HermesCLI resolves runtime/provider credentials in its constructor. A
+    # finite query must therefore bind its no-late-delivery capability before
+    # construction, then restore the caller's exact prior capability when the
+    # constructor returns or raises. The turn itself gets a separate scope
+    # below because it later resolves credentials again before its first call.
+    _constructor_stateless_channel_token = None
+    if query or image:
+        from gateway.session_context import (
+            declare_stateless_channel,
+            restore_stateless_channel,
+        )
+
+        _constructor_stateless_channel_token = declare_stateless_channel()
+    try:
+        # Create CLI instance
+        cli = HermesCLI(
+            model=model,
+            toolsets=toolsets_list,
+            provider=provider,
+            reasoning=reasoning,
+            api_key=api_key,
+            base_url=base_url,
+            max_turns=max_turns,
+            verbose=verbose,
+            compact=compact,
+            resume=resume,
+            checkpoints=checkpoints,
+            pass_session_id=pass_session_id,
+            ignore_rules=ignore_rules,
+        )
+    finally:
+        if _constructor_stateless_channel_token is not None:
+            restore_stateless_channel(_constructor_stateless_channel_token)
 
     if parsed_skills:
         # Load the skill payloads in the background: skill_view walks the
@@ -20328,20 +20348,34 @@ def main(
     
     # Handle single query mode
     if query or image:
+        # A single-query invocation prints one response and exits; it has no
+        # later turn that can receive a detached tool completion. Bind the
+        # capability before credentials, agent construction, or the first turn
+        # so delegate_task uses its existing inline fallback for the whole run.
+        from gateway.session_context import (
+            declare_stateless_channel,
+            restore_stateless_channel,
+        )
+
+        _stateless_channel_token = declare_stateless_channel()
         # One-shot mode: no between-turns MCP late-binding refresh, so the
         # agent must wait the full MCP cold-start bound before its first
         # (and only) tool snapshot. See #51316.
-        cli._single_query_mode = True
-        # Mark single-query for the approval gate. cli.py sets
-        # HERMES_INTERACTIVE earlier for interactive sudo prompts, but a -q
-        # run has NO user waiting to answer approval prompts. The gate reads
-        # this marker (via gateway.session_context.get_session_env, which falls
-        # back to os.environ when the session-context layer isn't engaged) and
-        # takes the deterministic approvals.single_query_mode path instead of
-        # waiting the full timeout. See #86878.
-        os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
-        if not cli._claim_active_session("cli", stderr=bool(quiet)):
-            sys.exit(1)
+        try:
+            cli._single_query_mode = True
+            # Mark single-query for the approval gate. cli.py sets
+            # HERMES_INTERACTIVE earlier for interactive sudo prompts, but a -q
+            # run has NO user waiting to answer approval prompts. The gate reads
+            # this marker (via gateway.session_context.get_session_env, which falls
+            # back to os.environ when the session-context layer isn't engaged) and
+            # takes the deterministic approvals.single_query_mode path instead of
+            # waiting the full timeout. See #86878.
+            os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
+            if not cli._claim_active_session("cli", stderr=bool(quiet)):
+                sys.exit(1)
+        except BaseException:
+            restore_stateless_channel(_stateless_channel_token)
+            raise
         try:
             query, single_query_images = _collect_query_images(query, image)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
@@ -20560,7 +20594,10 @@ def main(
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
         finally:
-            _finalize_single_query(cli)
+            try:
+                _finalize_single_query(cli)
+            finally:
+                restore_stateless_channel(_stateless_channel_token)
         return
     
     # Run interactive mode

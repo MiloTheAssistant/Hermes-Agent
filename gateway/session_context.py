@@ -454,7 +454,7 @@ def session_is_messaging_surface() -> bool:
     return False
 
 
-def declare_stateless_channel() -> None:
+def declare_stateless_channel():
     """Declare that this session cannot receive an async background completion.
 
     Binds only the delivery capability, leaving every other session var unset.
@@ -475,8 +475,18 @@ def declare_stateless_channel() -> None:
     never deliver them.
 
     See NousResearch/hermes-agent#53027 and #63142.
+    Returns a ContextVar token that the temporary caller must pass to
+    :func:`restore_stateless_channel` when it finishes. Long-lived one-shot
+    process entrypoints may ignore the token because process exit discards the
+    context; embedded callers must restore it so a later invocation retains
+    its own delivery capability.
     """
-    _SESSION_ASYNC_DELIVERY.set(False)
+    return _SESSION_ASYNC_DELIVERY.set(False)
+
+
+def restore_stateless_channel(token) -> None:
+    """Restore the delivery capability that preceded a scoped declaration."""
+    _SESSION_ASYNC_DELIVERY.reset(token)
 
 
 def async_delivery_supported() -> bool:

@@ -61,7 +61,9 @@ class TestAsyncDeliverySupported:
 # ---------------------------------------------------------------------------
 
 class TestDeclareStatelessChannel:
-    """``hermes -z`` and cron cannot receive a completion after their turn ends.
+    """Finite runners cannot receive a completion after exit.
+
+    This includes ``hermes -z``, ``hermes chat -q``, and cron.
 
     Cron clears the ``HERMES_SESSION_*`` routing keys, so an async delegation's
     completion event carries ``session_key=""`` and the gateway watcher drops it
@@ -97,10 +99,12 @@ class TestStatelessChannelForcesSyncDelegation:
     """
 
     def test_background_delegation_runs_inline_when_channel_is_stateless(
-        self, monkeypatch
+        self, monkeypatch, tmp_path
     ):
         import tools.delegate_tool as dt
         from gateway.session_context import declare_stateless_channel
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
 
         class _Parent:
             _delegate_depth = 0
@@ -147,6 +151,59 @@ class TestStatelessChannelForcesSyncDelegation:
         # The caller gets the actual work product, in-turn.
         assert "results" in parsed
         assert "done: review the spec" in json.dumps(parsed)
+
+    def test_background_delegation_stays_detached_in_async_gateway_context(
+        self, monkeypatch, tmp_path
+    ):
+        """A routable gateway context retains the top-level background contract."""
+        import tools.delegate_tool as dt
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        class _Parent:
+            _delegate_depth = 0
+            _subagent_id = None
+            session_id = "gateway-session"
+
+        fake_child = type("C", (), {"_subagent_id": "s1"})()
+        dispatched = []
+
+        def _fake_dispatch(*_a, **kw):
+            dispatched.append(kw)
+            return {"status": "dispatched", "delegation_id": "deleg_x"}
+
+        creds = {
+            "model": "m", "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "command": None, "args": None,
+        }
+        monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+        monkeypatch.setattr(
+            dt,
+            "_resolve_delegation_credentials",
+            lambda *a, **k: creds,
+        )
+        monkeypatch.setattr(
+            "tools.async_delegation.dispatch_async_delegation_batch", _fake_dispatch
+        )
+
+        reset_session_vars()
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="chat-1",
+            session_key="gateway-session",
+            async_delivery=True,
+        )
+        try:
+            out = dt.delegate_task(
+                goal="review the spec", background=True, parent_agent=_Parent()
+            )
+        finally:
+            clear_session_vars(tokens)
+            reset_session_vars()
+
+        parsed = json.loads(out)
+        assert dispatched, "routable gateway sessions must retain detached dispatch"
+        assert parsed["status"] == "dispatched"
 
 
 # ---------------------------------------------------------------------------
@@ -208,5 +265,3 @@ class TestTerminalNotifyGate:
         assert d.get("notify_unsupported"), "must explain the limitation"
         assert "poll" in d["notify_unsupported"].lower()
         assert len(process_registry.pending_watchers) == 0
-
-
