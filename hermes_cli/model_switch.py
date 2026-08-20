@@ -1699,11 +1699,110 @@ def switch_model(
         if custom_pdef is not None:
             provider_label = custom_pdef.name
 
-    # --- Resolve credentials ---
-    api_key = current_api_key
-    base_url = current_base_url
-    api_mode = ""
-    runtime: dict[str, Any] = {}
+    # Every successful branch owns one complete route binding. Empty values in
+    # a newly resolved route are authoritative; only the two documented
+    # current-route fallbacks below retain this initial binding.
+    final_binding: dict[str, Any] = {
+        "provider": current_provider,
+        "requested_provider": str(
+            current_requested_provider or current_provider or ""
+        ).strip(),
+        "api_key": current_api_key,
+        "base_url": current_base_url,
+        "api_mode": determine_api_mode(
+            current_provider, current_base_url, model=new_model
+        ),
+        "provider_request_overrides": deepcopy(
+            current_provider_request_overrides
+            if current_provider_request_overrides is not None else {}
+        ),
+        "credential_pool": current_credential_pool,
+        "command": current_command or "",
+        "args": list(current_args or []),
+        "max_output_tokens": current_max_output_tokens,
+    }
+
+    def _binding_from_runtime(runtime: dict[str, Any], requested: str) -> dict[str, Any]:
+        return {
+            "provider": str(runtime.get("provider") or target_provider),
+            "requested_provider": str(
+                runtime.get("requested_provider") or requested
+            ),
+            "api_key": runtime.get("api_key", ""),
+            "base_url": runtime.get("base_url", ""),
+            "api_mode": runtime.get("api_mode", ""),
+            "provider_request_overrides": deepcopy(
+                runtime.get("provider_request_overrides")
+                if "provider_request_overrides" in runtime
+                else runtime.get("request_overrides", {})
+            ),
+            "credential_pool": runtime.get("credential_pool"),
+            "command": runtime.get("command", ""),
+            "args": list(runtime.get("args") or []),
+            "max_output_tokens": runtime.get("max_output_tokens"),
+        }
+
+    def _provider_layer_for_final_route(binding: dict[str, Any]) -> dict[str, Any]:
+        from agent.agent_init import _provider_request_overrides_for_route
+        from hermes_cli.config import (
+            _normalize_custom_provider_entry,
+            providers_dict_to_custom_providers,
+        )
+
+        keyed: dict[str, dict[str, Any]] = {}
+        legacy: list[dict[str, Any]] = []
+        for original in custom_providers or []:
+            if not isinstance(original, dict):
+                continue
+            entry = deepcopy(original)
+            provider_key = str(entry.pop("provider_key", "") or "").strip()
+            if provider_key:
+                keyed.setdefault(provider_key, entry)
+            else:
+                legacy.append(entry)
+        if isinstance(user_providers, dict):
+            for provider_key, entry in user_providers.items():
+                if isinstance(entry, dict):
+                    keyed[str(provider_key)] = deepcopy(entry)
+
+        keyed_normalized = providers_dict_to_custom_providers(keyed)
+        legacy_normalized = [
+            normalized
+            for entry in legacy
+            if (normalized := _normalize_custom_provider_entry(entry)) is not None
+        ]
+        requested_identity = str(binding.get("requested_provider") or "").strip()
+        requested_key = (
+            requested_identity.split(":", 1)[1]
+            if requested_identity.startswith("custom:")
+            else requested_identity
+        )
+        selected_keyed = [
+            entry for entry in keyed_normalized
+            if str(entry.get("provider_key", "") or "").strip() == requested_key
+        ]
+
+        def _fingerprint(entry: dict[str, Any]) -> tuple[str, str, str]:
+            return (
+                str(entry.get("name", "") or "").strip().lower(),
+                str(entry.get("base_url", "") or "").strip().rstrip("/").lower(),
+                str(entry.get("model", "") or "").strip().lower(),
+            )
+
+        keyed_fingerprints = {_fingerprint(entry) for entry in selected_keyed}
+        compatible = selected_keyed + [
+            entry for entry in legacy_normalized
+            if _fingerprint(entry) not in keyed_fingerprints
+        ]
+        return _provider_request_overrides_for_route(
+            requested_provider=requested_identity,
+            provider=str(binding.get("provider") or ""),
+            model=new_model,
+            base_url=str(binding.get("base_url") or ""),
+            custom_providers=compatible,
+        )
+
+    runtime: dict[str, Any] | None = None
 
     if provider_changed or explicit_provider:
         import os
@@ -1740,26 +1839,38 @@ def switch_model(
                     explicit_base_url=_user_pdef.base_url,
                     target_model=new_model,
                 )
-                api_key = runtime.get("api_key", "") or _ukey
-                base_url = runtime.get("base_url", "") or _user_pdef.base_url
-                api_mode = runtime.get("api_mode", "")
+                final_binding = _binding_from_runtime(runtime, target_provider)
             except Exception:
-                api_key = _ukey
-                base_url = _user_pdef.base_url
-                api_mode = ""
+                final_binding = {
+                    "provider": target_provider,
+                    "requested_provider": target_provider,
+                    "api_key": _ukey,
+                    "base_url": _user_pdef.base_url,
+                    "api_mode": determine_api_mode(
+                        target_provider, _user_pdef.base_url, model=new_model
+                    ),
+                    "provider_request_overrides": {},
+                    "credential_pool": None,
+                    "command": "",
+                    "args": [],
+                    "max_output_tokens": None,
+                }
+                final_binding["provider_request_overrides"] = (
+                    _provider_layer_for_final_route(final_binding)
+                )
         elif target_provider == "custom" and current_base_url:
-            api_key = current_api_key
-            base_url = current_base_url
-            api_mode = determine_api_mode(target_provider, base_url)
+            # Bare current custom is a compatibility selection, not a new
+            # route identity. Preserve the explicit current binding.
+            final_binding["api_mode"] = determine_api_mode(
+                target_provider, current_base_url, model=new_model
+            )
         else:
             try:
                 runtime = resolve_runtime_provider(
                     requested=target_provider,
                     target_model=new_model,
                 )
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-                api_mode = runtime.get("api_mode", "")
+                final_binding = _binding_from_runtime(runtime, target_provider)
             except Exception as e:
                 return ModelSwitchResult(
                     success=False,
@@ -1774,18 +1885,24 @@ def switch_model(
     else:
         try:
             runtime = resolve_runtime_provider(
-                requested=current_provider,
+                requested=current_requested_provider or current_provider,
                 target_model=new_model,
             )
             # If resolution fell through to "custom" (e.g. named custom provider like
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
             # base_url adjustments for OpenCode, etc.).
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
+            final_binding = _binding_from_runtime(
+                runtime, current_requested_provider or current_provider
+            )
         except Exception:
+            # Same-provider resolver failure is the other documented current
+            # binding fallback.
             pass
+
+    api_key = final_binding["api_key"]
+    base_url = final_binding["base_url"]
+    api_mode = final_binding["api_mode"]
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     _alias_changed_endpoint = False
@@ -1795,6 +1912,7 @@ def switch_model(
         if _da is not None and _da.base_url:
             _alias_changed_endpoint = base_url.rstrip("/") != _da.base_url.rstrip("/")
             base_url = _da.base_url
+            final_binding["base_url"] = base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
                 api_key = "no-key-required"
@@ -1947,42 +2065,35 @@ def switch_model(
     # A direct alias is applied after the initial resolver pass.  Its body
     # controls must therefore be resolved from the final endpoint, not copied
     # from the old route.
-    final_provider = str(runtime.get("provider") or target_provider)
-    final_requested = str(
-        runtime.get("requested_provider") or current_requested_provider or target_provider
-    )
-    final_provider_overrides = deepcopy(
-        runtime.get("provider_request_overrides") or runtime.get("request_overrides")
-        or current_provider_request_overrides or {}
-    )
+    final_binding.update({
+        "api_key": api_key,
+        "base_url": base_url,
+        "api_mode": api_mode,
+    })
     if _alias_changed_endpoint:
         try:
-            from agent.agent_init import _provider_request_overrides_for_route
-
-            final_provider_overrides = _provider_request_overrides_for_route(
-                requested_provider=final_requested,
-                provider=final_provider,
-                model=new_model,
-                base_url=base_url,
-                custom_providers=custom_providers or [],
+            final_binding["provider_request_overrides"] = (
+                _provider_layer_for_final_route(final_binding)
             )
         except Exception:
             # No exact final route is a safe empty provider layer, never the
             # pre-alias endpoint's controls.
-            final_provider_overrides = {}
+            final_binding["provider_request_overrides"] = {}
 
     # --- Build result ---
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
         target_provider=target_provider,
-        provider=final_provider,
-        requested_provider=final_requested,
-        provider_request_overrides=final_provider_overrides,
-        command=str(runtime.get("command") or current_command or ""),
-        args=list(runtime.get("args") or current_args or []),
-        credential_pool=runtime.get("credential_pool", current_credential_pool),
-        max_output_tokens=runtime.get("max_output_tokens", current_max_output_tokens),
+        provider=str(final_binding["provider"]),
+        requested_provider=str(final_binding["requested_provider"]),
+        provider_request_overrides=deepcopy(
+            final_binding["provider_request_overrides"]
+        ),
+        command=str(final_binding["command"]),
+        args=list(final_binding["args"]),
+        credential_pool=final_binding["credential_pool"],
+        max_output_tokens=final_binding["max_output_tokens"],
         provider_changed=provider_changed,
         api_key=api_key,
         base_url=base_url,

@@ -44,6 +44,11 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 
 logger = logging.getLogger(__name__)
 
+# Public switch callers predating complete route bindings omit these keyword
+# arguments. A complete ModelSwitchResult may intentionally supply None/empty,
+# so None cannot also mean "argument omitted".
+SWITCH_BINDING_UNSET = object()
+
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
 # on a persistent auth failure before we give up and let the fallback chain
@@ -2602,7 +2607,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode='', *, requested_provider=None, provider_request_overrides=None, credential_pool=None, acp_command=None, acp_args=None, max_tokens=None):
+def switch_model(
+    agent, new_model, new_provider, api_key=SWITCH_BINDING_UNSET,
+    base_url='', api_mode='', *,
+    requested_provider=SWITCH_BINDING_UNSET,
+    provider_request_overrides=SWITCH_BINDING_UNSET,
+    credential_pool=SWITCH_BINDING_UNSET,
+    acp_command=SWITCH_BINDING_UNSET,
+    acp_args=SWITCH_BINDING_UNSET,
+    max_tokens=SWITCH_BINDING_UNSET,
+):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2617,6 +2631,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     turn-scoped).
     """
     from hermes_cli.providers import determine_api_mode
+
+    api_key_supplied = api_key is not SWITCH_BINDING_UNSET
+    final_api_key = "" if api_key is SWITCH_BINDING_UNSET or api_key is None else api_key
 
     # ── Determine api_mode if not provided ──
     # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
@@ -2722,16 +2739,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
-        agent.requested_provider = requested_provider or new_provider
-        if provider_request_overrides is not None and hasattr(agent, "_set_provider_request_overrides"):
+        agent.requested_provider = (
+            new_provider
+            if requested_provider is SWITCH_BINDING_UNSET
+            else requested_provider
+        )
+        if (
+            provider_request_overrides is not SWITCH_BINDING_UNSET
+            and hasattr(agent, "_set_provider_request_overrides")
+        ):
             agent._set_provider_request_overrides(provider_request_overrides)
-        if credential_pool is not None:
+        if credential_pool is not SWITCH_BINDING_UNSET:
             agent._credential_pool = credential_pool
-        if acp_command is not None:
+            agent._credential_pool_entry_id = None
+        if acp_command is not SWITCH_BINDING_UNSET:
             agent.acp_command = acp_command
-        if acp_args is not None:
-            agent.acp_args = list(acp_args)
-        if max_tokens is not None:
+        if acp_args is not SWITCH_BINDING_UNSET:
+            agent.acp_args = list(acp_args or [])
+        if max_tokens is not SWITCH_BINDING_UNSET:
             agent.max_tokens = max_tokens
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
@@ -2761,8 +2786,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
-        if api_key:
-            agent.api_key = api_key
+        if api_key_supplied:
+            agent.api_key = final_api_key
 
         # ── Reload credential pool for the new provider (issue #52727) ──
         # Without this, ``recover_with_credential_pool`` sees a
@@ -2774,7 +2799,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # logged + swallowed: the switch itself must still complete.
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
-        if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+        if (
+            credential_pool is SWITCH_BINDING_UNSET
+            and (
+                old_norm != new_norm
+                or getattr(agent, "_credential_pool", None) is None
+            )
+        ):
             # A pool bound to the old provider is worse than no pool: the
             # recovery guard rejects it and every later 401/429 skips rotation.
             agent._credential_pool = None
@@ -2804,7 +2835,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             # model. Pin chat_completions here so the primary call always goes
             # through MoAClient.chat.completions, matching agent_init.py.
             agent.api_mode = "chat_completions"
-            agent.api_key = api_key or "moa-virtual-provider"
+            agent.api_key = final_api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = build_moa_facade(agent, agent.model)
@@ -2818,7 +2849,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
             # API key — falling back would send Anthropic credentials to third-party endpoints.
             _is_native_anthropic = new_provider == "anthropic"
-            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+            if api_key_supplied:
+                effective_key = final_api_key
+            elif _is_native_anthropic:
+                effective_key = agent.api_key or resolve_anthropic_token() or ""
+            else:
+                effective_key = agent.api_key or ""
 
             # MiniMax OAuth: swap static string for a per-request callable token
             # provider so the rebuilt client survives 15-min token expiry. See
@@ -2846,7 +2882,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.client = None
             agent._client_kwargs = {}
         else:
-            effective_key = api_key or agent.api_key
+            effective_key = final_api_key if api_key_supplied else agent.api_key
             effective_base = base_url or agent.base_url
             agent._client_kwargs = {
                 "api_key": effective_key,

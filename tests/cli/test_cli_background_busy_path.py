@@ -90,6 +90,9 @@ def _install_task3_constructor_guards(monkeypatch):
     monkeypatch.setattr(
         "agent.model_metadata.detect_local_server_type", probes["local"]
     )
+    monkeypatch.setattr(
+        "agent.agent_init.query_ollama_num_ctx", MagicMock(return_value=None)
+    )
     return probes
 
 

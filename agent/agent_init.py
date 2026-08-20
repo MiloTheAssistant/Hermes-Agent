@@ -39,6 +39,8 @@ from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
+    is_local_endpoint,
+    query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -439,7 +441,10 @@ def _custom_provider_extra_body_for_agent(
     elif provider_norm.startswith("custom:"):
         provider_key_filter = provider_norm.split(":", 1)[1].strip()
     else:
-        return None
+        # A raw providers.<key> identity is authoritative too. Keeping the
+        # exact key here prevents endpoint-sharing siblings from donating a
+        # request body to the selected route.
+        provider_key_filter = provider_norm
 
     target_url = _normalized_custom_base_url(base_url)
     if not target_url:
@@ -487,8 +492,9 @@ def _provider_request_overrides_for_route(
     ):
         return {}
 
+    route_identity = str(requested_provider or provider or "").strip()
     extra_body = _custom_provider_extra_body_for_agent(
-        provider=provider,
+        provider=route_identity,
         model=model,
         base_url=base_url,
         custom_providers=custom_providers,
@@ -2861,6 +2867,22 @@ def init_agent(
             agent._ollama_num_ctx = int(_ollama_num_ctx_override)
         except (TypeError, ValueError):
             _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
+    if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
+        try:
+            # ``agent.api_key`` may be a callable (Entra token provider).
+            # Ollama detection makes a manual HTTP request and expects a
+            # string — Azure Foundry isn't a local endpoint so this branch
+            # never fires for Entra, but guard defensively.
+            _key_for_ollama = agent.api_key if isinstance(agent.api_key, str) else ""
+            _detected = query_ollama_num_ctx(
+                agent.model,
+                agent.base_url,
+                api_key=_key_for_ollama or "",
+            )
+            if _detected and _detected > 0:
+                agent._ollama_num_ctx = _detected
+        except Exception as exc:
+            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
     # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
     # Without this, GGUF metadata can advertise 256K+ which Ollama honours
     # by allocating that much VRAM — blowing up small GPUs even though the

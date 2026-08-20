@@ -8585,7 +8585,63 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "Failed to persist model switch to session DB", exc_info=True
             )
 
-    def _restore_session_model(self, session_meta: dict, *, quiet: bool = False) -> None:
+    @staticmethod
+    def _persisted_requested_provider(session_meta: dict) -> tuple[bool, str | None]:
+        """Return whether a modern identity is present and its validated value."""
+        raw_model_config = (session_meta or {}).get("model_config")
+        parsed_model_config = {}
+        if isinstance(raw_model_config, dict):
+            parsed_model_config = raw_model_config
+        elif isinstance(raw_model_config, str) and raw_model_config.strip():
+            try:
+                candidate = json.loads(raw_model_config)
+                if isinstance(candidate, dict):
+                    parsed_model_config = candidate
+            except (TypeError, ValueError):
+                pass
+        nested_runtime = parsed_model_config.get("gateway_runtime")
+        nested_runtime = nested_runtime if isinstance(nested_runtime, dict) else {}
+        identity_container = (
+            nested_runtime
+            if "requested_provider" in nested_runtime
+            else parsed_model_config
+        )
+        if "requested_provider" not in identity_container:
+            return False, None
+        candidate = identity_container["requested_provider"]
+        if (
+            not isinstance(candidate, str)
+            or not candidate.strip()
+            or candidate.strip().endswith(":")
+        ):
+            raise ValueError("invalid persisted requested_provider")
+        return True, candidate.strip().lower()
+
+    def _preflight_session_model_runtime(self, session_meta: dict) -> dict | None:
+        """Resolve an authoritative modern resume route before state mutation."""
+        stored_model = (session_meta or {}).get("model")
+        if not stored_model or getattr(self, "_explicit_model_override", False):
+            return None
+        has_requested_identity, requested_provider = (
+            self._persisted_requested_provider(session_meta)
+        )
+        if not has_requested_identity:
+            return None
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        return resolve_runtime_provider(
+            requested=requested_provider,
+            target_model=stored_model or None,
+        )
+
+    def _restore_session_model(
+        self,
+        session_meta: dict,
+        *,
+        quiet: bool = False,
+        _pre_resolved_runtime: dict | None = None,
+        _route_preflighted: bool = False,
+    ) -> None:
         """Restore model/provider from the session DB row on resume.
 
         Companion to ``_restore_session_cwd`` / ``_restore_session_yolo`` —
@@ -8602,9 +8658,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         are re-resolved for the stored provider (mirroring the gateway's
         ``_rehydrate_session_model_override``) — the ambient ``self.api_key``
         belongs to the config-default provider and must not be sent to the
-        session's endpoint. On resolution failure the ambient credentials are
-        kept so the session still opens (the first turn surfaces the auth
-        error instead of the resume dying).
+        session's endpoint. A modern persisted identity fails closed when
+        fresh resolution fails; only legacy rows without that identity retain
+        compatibility inference.
 
         Skips when the session has no model recorded or when the CLI was
         launched with an explicit ``-m`` override (user intent wins).
@@ -8615,31 +8671,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # An explicit -m / --model on the command line overrides resume.
         if getattr(self, "_explicit_model_override", False):
             return
-        # Read raw metadata here because the compatibility reader filters None
-        # values and cannot distinguish an absent requested identity from a
-        # present invalid one.
-        raw_model_config = (session_meta or {}).get("model_config")
-        parsed_model_config = {}
-        if isinstance(raw_model_config, dict):
-            parsed_model_config = raw_model_config
-        elif isinstance(raw_model_config, str) and raw_model_config.strip():
-            try:
-                candidate = json.loads(raw_model_config)
-                if isinstance(candidate, dict):
-                    parsed_model_config = candidate
-            except (TypeError, ValueError):
-                pass
-        nested_runtime = parsed_model_config.get("gateway_runtime")
-        nested_runtime = nested_runtime if isinstance(nested_runtime, dict) else {}
-        identity_container = nested_runtime if "requested_provider" in nested_runtime else parsed_model_config
-        has_requested_identity = "requested_provider" in identity_container
-        if has_requested_identity:
-            candidate = identity_container["requested_provider"]
-            if not isinstance(candidate, str) or not candidate.strip() or candidate.strip().endswith(":"):
-                raise ValueError("invalid persisted requested_provider")
-            stored_requested_provider = candidate.strip().lower()
-        else:
-            stored_requested_provider = None
+        # The compatibility reader filters None values and cannot distinguish
+        # an absent requested identity from a present invalid one.
+        has_requested_identity, stored_requested_provider = (
+            self._persisted_requested_provider(session_meta)
+        )
         # Stored provider/endpoint via the canonical row-level reader
         # (prefers model_config.gateway_runtime, falls back to the TUI
         # gateway's top-level keys).
@@ -8668,94 +8704,108 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             stored_provider_for_resolution = stored_provider
         model_changed = stored_model != self.model
-        provider_changed = bool(stored_provider_for_resolution) and stored_provider_for_resolution != self.requested_provider
-        resolved_runtime = None
-        if not model_changed and not provider_changed:
-            return
-        self.model = stored_model
+        provider_changed = (
+            bool(stored_provider_for_resolution)
+            and stored_provider_for_resolution != self.requested_provider
+        )
+        resolved_runtime = (
+            _pre_resolved_runtime
+            if _route_preflighted and has_requested_identity
+            else None
+        )
         if stored_provider_for_resolution:
-            self.requested_provider = stored_provider_for_resolution
-            self.provider = stored_provider
-            if stored_base_url:
-                self.base_url = stored_base_url
-            if stored_api_mode:
-                self.api_mode = stored_api_mode
-        if provider_changed:
-            # Stale launch-time explicit overrides belong to the AMBIENT
-            # provider; carrying them into the restored provider's
-            # resolution poisons _ensure_runtime_credentials on startup
-            # resume (same leak _apply_model_switch_result guards against
-            # by overwriting _explicit_* on every switch).
-            self._explicit_api_key = None
-            self._explicit_base_url = stored_base_url
-            # Re-resolve credentials for the restored provider. api_key is
-            # never persisted to the session DB (by design) — the normal
-            # runtime provider resolution owns credentials.
             try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider_for_resolution)
-                resolved_runtime = resolved
-                if resolved.get("provider"):
-                    self.provider = resolved["provider"]
-                if resolved.get("requested_provider"):
-                    self.requested_provider = resolved["requested_provider"]
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if not stored_base_url and resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
+                if not (_route_preflighted and has_requested_identity):
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                    resolved_runtime = resolve_runtime_provider(
+                        requested=stored_provider_for_resolution,
+                        target_model=stored_model or None,
+                    )
             except Exception:
+                if has_requested_identity:
+                    # A modern persisted identity is authoritative. Never pair
+                    # its stored endpoint with ambient credentials after fresh
+                    # resolution fails.
+                    raise
                 logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
+                    "Credential re-resolution for legacy resumed session "
+                    "provider %s failed",
                     stored_provider, exc_info=True,
                 )
+        if not model_changed and not provider_changed and resolved_runtime is None:
+            return
+
+        candidate_provider = stored_provider or self.provider
+        candidate_requested = stored_provider_for_resolution or self.requested_provider
+        candidate_api_key = self.api_key
+        candidate_base_url = stored_base_url or self.base_url
+        candidate_api_mode = stored_api_mode or self.api_mode
+        if resolved_runtime is not None:
+            candidate_provider = resolved_runtime.get("provider") or candidate_provider
+            candidate_requested = (
+                resolved_runtime.get("requested_provider") or candidate_requested
+            )
+            candidate_api_key = resolved_runtime.get("api_key", "")
+            candidate_base_url = resolved_runtime.get("base_url", "")
+            candidate_api_mode = resolved_runtime.get("api_mode", "")
         # If the agent is already running (mid-chat /resume), swap it
         # in-place so the next turn uses the restored model. On startup
         # --resume the agent isn't built yet — _init_agent will pick up
         # self.model / self.provider when constructing AIAgent.
         if self.agent is not None:
-            try:
-                self.agent.switch_model(
-                    new_model=self.model,
-                    new_provider=self.provider,
-                    requested_provider=(resolved_runtime or {}).get(
-                        "requested_provider", self.requested_provider or self.provider
-                    ),
-                    api_key=self.api_key or "",
-                    base_url=self.base_url or "",
-                    api_mode=self.api_mode or "",
-                    provider_request_overrides=(resolved_runtime or {}).get(
-                        "provider_request_overrides", (resolved_runtime or {}).get("request_overrides", {})
-                    ),
-                    credential_pool=(resolved_runtime or {}).get("credential_pool"),
-                    acp_command=(resolved_runtime or {}).get("command"),
-                    acp_args=(resolved_runtime or {}).get("args"),
-                    max_tokens=(resolved_runtime or {}).get("max_output_tokens"),
-                )
-                if resolved_runtime is not None:
-                    resolved_requested = resolved_runtime.get("requested_provider")
-                    if resolved_requested:
-                        self.agent.requested_provider = resolved_requested
-                    if hasattr(self.agent, "_set_provider_request_overrides"):
-                        self.agent._set_provider_request_overrides(
-                            copy.deepcopy(
-                                resolved_runtime.get("request_overrides") or {}
+            self.agent.switch_model(
+                new_model=stored_model,
+                new_provider=candidate_provider,
+                requested_provider=candidate_requested,
+                api_key=candidate_api_key or "",
+                base_url=candidate_base_url or "",
+                api_mode=candidate_api_mode or "",
+                provider_request_overrides=copy.deepcopy(
+                    (resolved_runtime or {}).get(
+                        "provider_request_overrides",
+                        (resolved_runtime or {}).get("request_overrides", {}),
+                    )
+                ),
+                credential_pool=(resolved_runtime or {}).get("credential_pool"),
+                acp_command=(resolved_runtime or {}).get("command", ""),
+                acp_args=(resolved_runtime or {}).get("args", []),
+                max_tokens=(resolved_runtime or {}).get("max_output_tokens"),
+            )
+            if resolved_runtime is not None:
+                self.agent.requested_provider = candidate_requested
+                if hasattr(self.agent, "_set_provider_request_overrides"):
+                    self.agent._set_provider_request_overrides(
+                        copy.deepcopy(
+                            resolved_runtime.get(
+                                "provider_request_overrides",
+                                resolved_runtime.get("request_overrides", {}),
                             )
                         )
-                    primary_runtime = getattr(self.agent, "_primary_runtime", None)
-                    if isinstance(primary_runtime, dict):
-                        primary_runtime = copy.deepcopy(primary_runtime)
-                        primary_runtime["requested_provider"] = (
-                            resolved_requested or self.agent.requested_provider
+                    )
+                primary_runtime = getattr(self.agent, "_primary_runtime", None)
+                if isinstance(primary_runtime, dict):
+                    primary_runtime = copy.deepcopy(primary_runtime)
+                    primary_runtime["requested_provider"] = candidate_requested
+                    primary_runtime["provider_request_overrides"] = copy.deepcopy(
+                        resolved_runtime.get(
+                            "provider_request_overrides",
+                            resolved_runtime.get("request_overrides", {}),
                         )
-                        self.agent._primary_runtime = primary_runtime
-            except Exception:
-                logger.debug(
-                    "In-place agent model swap on resume failed", exc_info=True
-                )
+                    )
+                    self.agent._primary_runtime = primary_runtime
+
+        self.model = stored_model
+        self.provider = candidate_provider
+        self.requested_provider = candidate_requested
+        self.api_key = candidate_api_key
+        self.base_url = candidate_base_url
+        self.api_mode = candidate_api_mode
+        if resolved_runtime is not None:
+            self._credential_pool = resolved_runtime.get("credential_pool")
+        if provider_changed:
+            self._explicit_api_key = None
+            self._explicit_base_url = candidate_base_url
         msg = f"Model restored from session: {stored_model}"
         if stored_provider:
             msg += f" ({stored_provider})"

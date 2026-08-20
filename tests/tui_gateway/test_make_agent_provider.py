@@ -29,6 +29,9 @@ def _install_real_agent_probe_guards(monkeypatch):
     monkeypatch.setattr(
         "agent.model_metadata.detect_local_server_type", local_server,
     )
+    monkeypatch.setattr(
+        "agent.agent_init.query_ollama_num_ctx", MagicMock(return_value=None),
+    )
     return context_length, endpoint_metadata, local_server
 
 

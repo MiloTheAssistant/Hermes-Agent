@@ -515,3 +515,87 @@ def test_acp_unknown_present_identity_fails_closed_without_agent_construction(tm
 
     assert resolver.call_args.kwargs["requested"] == "unknown:route"
     constructor.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid", [None, "", "   ", [], {}, "custom:"])
+def test_acp_real_restore_rejects_malformed_identity_without_contact(
+    invalid, tmp_path, monkeypatch,
+):
+    db = MagicMock()
+    db.get_session.return_value = {
+        "source": "acp", "model": "stored-model",
+        "model_config": json.dumps({
+            "cwd": str(tmp_path), "provider": "custom",
+            "requested_provider": invalid,
+            "base_url": "https://stored-a.example/v1",
+        }),
+    }
+    resolver = MagicMock(
+        side_effect=AssertionError("malformed identity reached resolver")
+    )
+    constructor = MagicMock()
+    history = MagicMock(
+        side_effect=AssertionError("malformed identity loaded conversation")
+    )
+    db.get_messages_as_conversation = history
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", resolver
+    )
+    monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_a: None)
+
+    with patch("run_agent.AIAgent", constructor):
+        assert SessionManager(db=db)._restore("acp-malformed") is None
+
+    resolver.assert_not_called()
+    constructor.assert_not_called()
+    history.assert_not_called()
+
+
+def test_acp_modern_resume_config_drift_uses_current_atomic_route(
+    tmp_path, monkeypatch,
+):
+    db = MagicMock()
+    db.get_session.return_value = {
+        "source": "acp", "model": "stored-model",
+        "model_config": json.dumps({
+            "cwd": str(tmp_path), "provider": "custom",
+            "requested_provider": "custom:route",
+            "base_url": "https://stored-a.example/v1",
+            "api_mode": "chat_completions",
+        }),
+    }
+    db.get_messages_as_conversation.return_value = []
+    pool = object()
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "custom", "requested_provider": "custom:route",
+            "api_key": "current-b-key", "base_url": "https://current-b.example/v1",
+            "api_mode": "codex_responses",
+            "request_overrides": {"extra_body": {"route": "current-b"}},
+            "credential_pool": pool, "command": "current-command",
+            "args": ["--current"], "max_output_tokens": 4096,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "ambient", "provider": "openrouter"}},
+    )
+    monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda *_a: None)
+    captured = {}
+
+    def construct(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(model=kwargs["model"])
+
+    with patch("run_agent.AIAgent", side_effect=construct):
+        restored = SessionManager(db=db)._restore("acp-drift")
+
+    assert restored is not None
+    assert captured["base_url"] == "https://current-b.example/v1"
+    assert captured["api_key"] == "current-b-key"
+    assert captured["api_mode"] == "codex_responses"
+    assert captured["provider_request_overrides"] == {
+        "extra_body": {"route": "current-b"}
+    }
+    assert captured["credential_pool"] is pool

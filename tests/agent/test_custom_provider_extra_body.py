@@ -32,6 +32,44 @@ def _assert_task1_constructor_guards(probes):
     probes["local"].assert_not_called()
 
 
+def test_constructor_discovers_local_ollama_num_ctx_before_applying_cap(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("run_agent.OpenAI", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length",
+        MagicMock(return_value=262_144),
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.fetch_endpoint_model_metadata",
+        MagicMock(side_effect=AssertionError("endpoint metadata probe forbidden")),
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.detect_local_server_type",
+        MagicMock(side_effect=AssertionError("local service probe forbidden")),
+    )
+    is_local = MagicMock(return_value=True)
+    query = MagicMock(return_value=8192)
+    monkeypatch.setattr(agent_init, "is_local_endpoint", is_local, raising=False)
+    monkeypatch.setattr(agent_init, "query_ollama_num_ctx", query, raising=False)
+
+    agent = AIAgent(
+        api_key="no-key-required", base_url="http://127.0.0.1:11434/v1",
+        provider="custom", requested_provider="ollama",
+        model="synthetic-local-model", quiet_mode=True,
+        skip_context_files=True, skip_memory=True,
+        provider_request_overrides={},
+    )
+
+    assert agent._ollama_num_ctx == 8192
+    is_local.assert_called_once_with("http://127.0.0.1:11434/v1")
+    query.assert_called_once_with(
+        "synthetic-local-model", "http://127.0.0.1:11434/v1",
+        api_key="no-key-required",
+    )
+
+
 
 def test_custom_provider_extra_body_preserves_caller_override(tmp_path, monkeypatch):
     provider_overrides = agent_init._provider_request_overrides_for_route(

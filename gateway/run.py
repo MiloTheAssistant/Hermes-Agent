@@ -26001,37 +26001,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             requested = requested_marker.strip()
         else:
             requested = persisted.get("provider")
-        override: Dict[str, Any] = {
-            "model": persisted.get("model"),
-            "provider": persisted.get("provider"),
-            "requested_provider": requested,
-            "base_url": persisted.get("base_url"),
-        }
+        override: Dict[str, Any] = {"model": persisted.get("model")}
         provider = requested
         if provider:
-            # Re-resolve credentials for the persisted provider. On failure
-            # (e.g. credentials were removed since the switch) keep the
-            # credential-less override — _resolve_session_agent_runtime falls
-            # back to env-based resolution and applies model/provider on top.
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
-                override["api_key"] = runtime.get("api_key")
-                override["api_mode"] = runtime.get("api_mode")
-                override["credential_pool"] = runtime.get("credential_pool")
-                override["provider_request_overrides"] = copy.deepcopy(
-                    runtime.get("provider_request_overrides")
-                    or runtime.get("request_overrides")
-                    or {}
-                )
-                override["requested_provider"] = runtime.get("requested_provider") or requested
-                if not override.get("base_url"):
-                    override["base_url"] = runtime.get("base_url")
             except Exception:
+                if requested_marker is not _missing:
+                    # Present modern identity is authoritative. A partial
+                    # stored override must never be overlaid onto ambient
+                    # credentials after resolution failure.
+                    raise
                 logger.debug(
-                    "Credential re-resolution failed for persisted override "
-                    "(provider=%s); using credential-less override",
-                    provider, exc_info=True,
+                    "Credential re-resolution failed for legacy persisted "
+                    "override (provider=%s)", provider, exc_info=True,
                 )
+                return
+            override.update({
+                "provider": runtime.get("provider"),
+                "requested_provider": runtime.get("requested_provider") or requested,
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "api_mode": runtime.get("api_mode"),
+                "credential_pool": runtime.get("credential_pool"),
+                "provider_request_overrides": copy.deepcopy(
+                    runtime.get("provider_request_overrides")
+                    if "provider_request_overrides" in runtime
+                    else runtime.get("request_overrides", {})
+                ),
+                "command": runtime.get("command", ""),
+                "args": list(runtime.get("args") or []),
+                "max_tokens": runtime.get(
+                    "max_tokens", runtime.get("max_output_tokens")
+                ),
+            })
         self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
@@ -26046,8 +26049,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The gateway /model command stores per-session overrides in
         ``_session_model_overrides``.  These must take precedence over
         config.yaml defaults so the switched model is actually used for
-        subsequent messages.  Fields with ``None`` values are skipped so
-        partial overrides don't clobber valid config defaults.
+        subsequent messages. Present fields form a complete route binding, so
+        an explicit ``None`` clears a stale default; absent fields retain the
+        legacy partial-override behavior.
         """
         _apply_state = self._peek_session_state(session_key)
         override = _apply_state.conversation.model_override if _apply_state else None
@@ -26056,15 +26060,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         model = override.get("model", model)
         for key in (
             "provider", "requested_provider", "api_key", "base_url", "api_mode",
-            "credential_pool", "provider_request_overrides",
+            "credential_pool", "provider_request_overrides", "command", "args",
+            "max_tokens",
         ):
-            val = override.get(key)
-            if val is not None:
-                runtime_kwargs[key] = val
+            if key in override:
+                runtime_kwargs[key] = override[key]
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None
             and override.get("provider")
+            and "credential_pool" not in override
         ):
             runtime_kwargs["credential_pool"] = _credential_pool_for_provider(
                 override.get("provider")

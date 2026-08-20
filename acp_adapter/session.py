@@ -698,8 +698,11 @@ class SessionManager:
                 {
                     "provider": runtime.get("provider"),
                     "requested_provider": runtime.get("requested_provider"),
-                    "api_mode": api_mode or runtime.get("api_mode"),
-                    "base_url": base_url or runtime.get("base_url"),
+                    # Persisted endpoint/mode are safe historical metadata, not
+                    # credential authority. Fresh resolution owns the complete
+                    # modern route binding after config drift.
+                    "api_mode": runtime.get("api_mode"),
+                    "base_url": runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),
                     "acp_command": runtime.get("command"),
                     "acp_args": list(runtime.get("args") or []),

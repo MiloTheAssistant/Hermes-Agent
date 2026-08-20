@@ -8,6 +8,7 @@ used instead of the ambient config default (#57588-class, #79536).
 
 import json
 from copy import deepcopy
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -272,6 +273,21 @@ def test_round_trip_persist_then_restore(tmp_path, monkeypatch):
     stub._persist_model_switch_to_session(_Result())
 
     meta = db.get_session("rt1")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "requested_provider": "custom:opencode-zen",
+            "api_key": "synthetic-key",
+            "base_url": "https://oz/v1",
+            "api_mode": "",
+            "provider_request_overrides": {},
+            "credential_pool": None,
+            "command": "",
+            "args": [],
+            "max_output_tokens": None,
+        },
+    )
     restored = _make_stub()
     restored._restore_session_model(meta)
     assert restored.model == "deepseek-v4-flash-free"
@@ -463,3 +479,129 @@ def test_cli_in_place_resume_installs_resolved_route_binding(monkeypatch):
     assert agent._caller_request_overrides == {"extra_body": {"caller": "keep"}, "caller_only": True}
     assert agent._request_overrides == {"extra_body": {"route": "fresh", "caller": "keep"}, "provider_only": True, "caller_only": True}
     assert agent._primary_runtime["requested_provider"] == "ollama"
+
+
+def test_cli_modern_resume_resolution_failure_is_atomic_and_fail_closed(monkeypatch):
+    agent = type("LiveAgent", (), {"switch_model": MagicMock()})()
+    stub = _make_stub(agent=agent)
+    before = {
+        name: getattr(stub, name)
+        for name in ("model", "provider", "requested_provider", "base_url", "api_key", "api_mode")
+    }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        MagicMock(side_effect=RuntimeError("stored route removed")),
+    )
+
+    with pytest.raises(RuntimeError, match="stored route removed"):
+        stub._restore_session_model(_row(model_config={"gateway_runtime": {
+            "provider": "custom", "requested_provider": "custom:removed",
+            "base_url": "https://stored-a.example/v1",
+            "api_mode": "chat_completions",
+        }}))
+
+    assert {
+        name: getattr(stub, name)
+        for name in ("model", "provider", "requested_provider", "base_url", "api_key", "api_mode")
+    } == before
+    agent.switch_model.assert_not_called()
+
+
+def test_classic_resume_resolves_route_before_mutating_active_session(monkeypatch):
+    """A failed target route must leave the active /resume session untouched."""
+    old_history = [{"role": "user", "content": "old-session-message"}]
+    target_meta = _row(model_config={"gateway_runtime": {
+        "provider": "custom", "requested_provider": "custom:removed",
+        "base_url": "https://stored-a.example/v1",
+        "api_mode": "chat_completions",
+    }})
+    target_meta.update({"id": "target-session", "title": "Target"})
+
+    db = MagicMock()
+    db.get_session.return_value = target_meta
+    db.resolve_resume_session_id.return_value = "target-session"
+    db.get_resume_conversations.return_value = (
+        [{"role": "user", "content": "target-message"}],
+        [{"role": "user", "content": "target-message"}],
+    )
+
+    agent = MagicMock()
+    agent.session_id = "old-session"
+    agent._last_flushed_db_idx = len(old_history)
+    agent._memory_manager = None
+    stub = _make_stub(
+        agent=agent, _session_db=db, session_id="old-session",
+        conversation_history=deepcopy(old_history), _resumed=False,
+        _pending_title="Old title", _pending_resume_sessions=None,
+        _resume_display_history=deepcopy(old_history),
+    )
+    stub._restore_session_cwd = MagicMock()
+    stub._restore_session_yolo = MagicMock()
+    stub._display_resumed_history = MagicMock()
+
+    monkeypatch.setattr(
+        "hermes_cli.main._resolve_session_by_name_or_id",
+        lambda _target: "target-session",
+    )
+    monkeypatch.setattr("cli._sync_process_session_id", MagicMock())
+    monkeypatch.setattr("cli._cprint", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        MagicMock(side_effect=RuntimeError("stored route removed")),
+    )
+
+    with pytest.raises(RuntimeError, match="stored route removed"):
+        stub._handle_resume_command("/resume target-session")
+
+    assert stub.session_id == "old-session"
+    assert stub.conversation_history == old_history
+    assert stub._resumed is False
+    assert stub._pending_title == "Old title"
+    assert agent.session_id == "old-session"
+    agent._flush_messages_to_session_db.assert_not_called()
+    agent.reset_session_state.assert_not_called()
+    agent.switch_model.assert_not_called()
+    db.end_session.assert_not_called()
+    db.reopen_session.assert_not_called()
+    stub._restore_session_cwd.assert_not_called()
+    stub._restore_session_yolo.assert_not_called()
+
+
+def test_cli_modern_resume_config_drift_uses_current_atomic_route(monkeypatch):
+    captured = {}
+
+    class LiveAgent:
+        def switch_model(self, **kwargs):
+            captured.update(kwargs)
+
+    current_pool = object()
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "custom", "requested_provider": "custom:route",
+            "api_key": "current-b-key", "base_url": "https://current-b.example/v1",
+            "api_mode": "codex_responses",
+            "request_overrides": {"extra_body": {"route": "current-b"}},
+            "credential_pool": current_pool, "command": "current-command",
+            "args": ["--current"], "max_output_tokens": 4096,
+        },
+    )
+    stub = _make_stub(agent=LiveAgent())
+
+    stub._restore_session_model(_row(model_config={"gateway_runtime": {
+        "provider": "custom", "requested_provider": "custom:route",
+        "base_url": "https://stored-a.example/v1",
+        "api_mode": "chat_completions",
+    }}))
+
+    assert (stub.provider, stub.requested_provider) == ("custom", "custom:route")
+    assert stub.base_url == "https://current-b.example/v1"
+    assert stub.api_key == "current-b-key"
+    assert stub.api_mode == "codex_responses"
+    assert captured["base_url"] == "https://current-b.example/v1"
+    assert captured["api_key"] == "current-b-key"
+    assert captured["api_mode"] == "codex_responses"
+    assert captured["provider_request_overrides"] == {
+        "extra_body": {"route": "current-b"}
+    }
+    assert captured["credential_pool"] is current_pool

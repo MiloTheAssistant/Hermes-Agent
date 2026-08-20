@@ -137,6 +137,97 @@ def test_second_gateway_switch_after_cache_eviction_keeps_complete_binding():
     assert runner._session_model_overrides[session_key] == first_switch
 
 
+class _PersistedRouteStore:
+    def __init__(self, *, endpoint="https://stored-a.example/v1"):
+        self.endpoint = endpoint
+
+    def get_model_override(self, _session_key):
+        return {
+            "model": "stored-model", "provider": "custom",
+            "base_url": self.endpoint,
+        }
+
+    def get_session_metadata(self, _session_key, name, default=None):
+        assert name == "model_requested_provider"
+        return "custom:route"
+
+
+def _runner_for_persisted_route():
+    runner = _make_runner()
+    state = SimpleNamespace(conversation=SimpleNamespace(model_override=None))
+    runner.session_store = _PersistedRouteStore()
+    runner._peek_session_state = lambda _key: state
+    runner._session_state = lambda _key: state
+    return runner, state
+
+
+def test_gateway_modern_resume_resolution_failure_is_fail_closed(monkeypatch):
+    runner, state = _runner_for_persisted_route()
+    resolver = MagicMock(side_effect=RuntimeError("stored route removed"))
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider", resolver
+    )
+
+    with pytest.raises(RuntimeError, match="stored route removed"):
+        runner._rehydrate_session_model_override("agent:main:stored")
+
+    assert state.conversation.model_override is None
+
+
+def test_gateway_modern_resume_config_drift_uses_current_atomic_route(monkeypatch):
+    runner, state = _runner_for_persisted_route()
+    pool = object()
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        lambda _requested: {
+            "provider": "custom", "requested_provider": "custom:route",
+            "api_key": "current-b-key", "base_url": "https://current-b.example/v1",
+            "api_mode": "codex_responses", "credential_pool": pool,
+            "provider_request_overrides": {"extra_body": {"route": "current-b"}},
+            "command": "current-command", "args": ["--current"],
+            "max_tokens": None,
+        },
+    )
+
+    runner._rehydrate_session_model_override("agent:main:stored")
+
+    override = state.conversation.model_override
+    assert override["base_url"] == "https://current-b.example/v1"
+    assert override["api_key"] == "current-b-key"
+    assert override["api_mode"] == "codex_responses"
+    assert override["provider_request_overrides"] == {
+        "extra_body": {"route": "current-b"}
+    }
+    assert override["credential_pool"] is pool
+    model, applied = runner._apply_session_model_override(
+        "agent:main:stored",
+        "ambient-model",
+        {
+            "provider": "custom",
+            "requested_provider": "custom:route",
+            "api_key": "stale-a-key",
+            "base_url": "https://stored-a.example/v1",
+            "api_mode": "chat_completions",
+            "credential_pool": object(),
+            "provider_request_overrides": {"extra_body": {"route": "stored-a"}},
+            "command": "stale-command",
+            "args": ["--stale"],
+            "max_tokens": 8192,
+        },
+    )
+    assert model == "stored-model"
+    assert applied["base_url"] == "https://current-b.example/v1"
+    assert applied["api_key"] == "current-b-key"
+    assert applied["api_mode"] == "codex_responses"
+    assert applied["provider_request_overrides"] == {
+        "extra_body": {"route": "current-b"}
+    }
+    assert applied["credential_pool"] is pool
+    assert applied["command"] == "current-command"
+    assert applied["args"] == ["--current"]
+    assert applied["max_tokens"] is None
+
+
 _SYNTHETIC_DURABLE_USERINFO_AUTHORITY = "user" + ":" + "pass" + "@Example.TEST:8443"
 _SYNTHETIC_DURABLE_USERINFO_ENDPOINT = (
     "https://" + _SYNTHETIC_DURABLE_USERINFO_AUTHORITY + "/v1?query=value#frag"

@@ -278,6 +278,200 @@ def test_tui_unknown_present_identity_failure_never_constructs_agent(monkeypatch
     constructor.assert_not_called()
 
 
+@pytest.mark.parametrize("invalid", [None, "", "   ", [], {}, "custom:"])
+def test_tui_real_build_rejects_malformed_present_identity_before_resolution(
+    invalid, monkeypatch,
+):
+    import tui_gateway.server as server
+
+    resolver = MagicMock(
+        side_effect=AssertionError("malformed identity reached resolver")
+    )
+    constructor = MagicMock()
+    monkeypatch.setattr(server, "_resolve_runtime_with_fallback", resolver)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "ambient-model", "provider": "openrouter"},
+    })
+    monkeypatch.setattr("tui_gateway.entry.wait_for_mcp_discovery", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.wait_for_mcp_discovery", lambda: None
+    )
+
+    with patch("run_agent.AIAgent", constructor):
+        with pytest.raises(ValueError, match="requested_provider"):
+            server._make_agent(
+                "tui-malformed", "synthetic-key",
+                model_override={
+                    "model": "stored-model", "provider": "custom",
+                    "requested_provider": invalid,
+                    "base_url": "https://stored-a.example/v1",
+                },
+            )
+
+    resolver.assert_not_called()
+    constructor.assert_not_called()
+
+
+def test_tui_modern_resume_config_drift_uses_current_atomic_route(
+    tmp_path, monkeypatch,
+):
+    import run_agent
+    import tui_gateway.server as server
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    current_pool = object()
+    resolved = MagicMock(return_value={
+        "provider": "custom", "requested_provider": "custom:route",
+        "api_key": "current-b-key", "base_url": "https://current-b.example/v1",
+        "api_mode": "codex_responses",
+        "request_overrides": {"extra_body": {"route": "current-b"}},
+        "credential_pool": current_pool, "command": "current-command",
+        "args": ["--current"], "max_output_tokens": 4096,
+    })
+    monkeypatch.setattr(rp, "resolve_runtime_provider", resolved)
+    captured = {}
+
+    def construct(*_args, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(**kwargs)
+
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "ambient-model", "provider": "openrouter"},
+    }
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch("run_agent.AIAgent", side_effect=construct),
+    ):
+        server._make_agent(
+            "tui-drift", "synthetic-key",
+            model_override={
+                "model": "stored-model", "provider": "custom",
+                "requested_provider": "custom:route",
+                "base_url": "https://stored-a.example/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+
+    assert captured["base_url"] == "https://current-b.example/v1"
+    assert captured["api_key"] == "current-b-key"
+    assert captured["api_mode"] == "codex_responses"
+    assert captured["provider_request_overrides"] == {
+        "extra_body": {"route": "current-b"}
+    }
+    assert captured["credential_pool"] is current_pool
+
+
+def test_tui_live_switch_rebuild_keeps_one_complete_atomic_binding(monkeypatch):
+    """A live A binding must never rebuild with route B's body/pool/cap."""
+    import tui_gateway.server as server
+
+    route_a_pool = object()
+    route_b_pool = object()
+    result = types.SimpleNamespace(
+        success=True, error_message="", warning_message="", model_info=None,
+        new_model="route-a-model", target_provider="custom:route-a",
+        provider="custom", requested_provider="custom:route-a",
+        api_key="route-a-key", base_url="https://route-a.example/v1",
+        api_mode="chat_completions",
+        provider_request_overrides={"extra_body": {"route": "a"}},
+        credential_pool=route_a_pool, command="route-a-command",
+        args=["--route-a"], max_output_tokens=2048,
+    )
+
+    class LiveAgent:
+        model = "old-model"
+        provider = "openrouter"
+        requested_provider = "openrouter"
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = "old-key"
+        _provider_request_overrides = {"extra_body": {"route": "old"}}
+        _credential_pool = object()
+        acp_command = "old-command"
+        acp_args = ["--old"]
+        max_tokens = 8192
+
+        def switch_model(self, **_kwargs):
+            return None
+
+    session = {"agent": LiveAgent(), "session_key": "route-a-session"}
+    parsed = types.SimpleNamespace(
+        model_input="route-a-model", explicit_provider="custom:route-a",
+        is_global=False, is_session=True, is_once=False,
+    )
+    with (
+        patch("hermes_cli.model_switch.switch_model", return_value=result),
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("tui_gateway.server._restart_slash_worker"),
+        patch("tui_gateway.server._persist_live_session_runtime"),
+        patch("tui_gateway.server._persist_live_session_system_prompt"),
+        patch("tui_gateway.server._append_model_switch_marker"),
+        patch("tui_gateway.server._emit"),
+        patch("tui_gateway.server._session_info", return_value={}),
+    ):
+        server._apply_model_switch(
+            "sid-route-a", session, "route-a-model",
+            confirm_expensive_model=True, parsed_flags=parsed,
+            persist_override=False,
+        )
+
+    override = session["model_override"]
+    assert override["provider_request_overrides"] == {
+        "extra_body": {"route": "a"}
+    }
+    assert override["credential_pool"] is route_a_pool
+    assert override["command"] == "route-a-command"
+    assert override["args"] == ["--route-a"]
+    assert override["max_output_tokens"] == 2048
+
+    route_b = {
+        "provider": "custom", "requested_provider": "custom:route-a",
+        "api_key": "route-b-key", "base_url": "https://route-b.example/v1",
+        "api_mode": "codex_responses",
+        "request_overrides": {"extra_body": {"route": "b"}},
+        "credential_pool": route_b_pool, "command": "route-b-command",
+        "args": ["--route-b"], "max_output_tokens": 4096,
+    }
+    captured = {}
+    resolver_b = MagicMock(
+        side_effect=lambda _kwargs: types.SimpleNamespace(
+            runtime=deepcopy(route_b), used_fallback=False, selected_model=None,
+        )
+    )
+    monkeypatch.setattr(server, "_resolve_runtime_with_fallback", resolver_b)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "ambient-model", "provider": "openrouter"},
+    })
+    monkeypatch.setattr(server, "_get_db", MagicMock())
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda *_a: None)
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a: None)
+    monkeypatch.setattr(server, "_load_provider_routing", lambda: {})
+
+    with patch("run_agent.AIAgent", side_effect=lambda **kwargs: captured.update(kwargs)):
+        server._make_agent(
+            "sid-route-a-rebuild", "route-a-session", model_override=override
+        )
+
+    assert captured["base_url"] == "https://route-a.example/v1"
+    assert captured["api_key"] == "route-a-key"
+    assert captured["api_mode"] == "chat_completions"
+    assert captured["provider_request_overrides"] == {
+        "extra_body": {"route": "a"}
+    }
+    assert captured["credential_pool"] is route_a_pool
+    assert captured["acp_command"] == "route-a-command"
+    assert captured["acp_args"] == ["--route-a"]
+    assert captured["max_tokens"] == 2048
+    resolver_b.assert_not_called()
+
+
 # --- Regression: bare "custom" WITHOUT a base_url (GH #44022 / #47714) ------
 #
 # The recurring Desktop/TUI "No LLM provider configured" regression. Every

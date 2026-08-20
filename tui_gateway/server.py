@@ -4924,6 +4924,25 @@ def _apply_model_switch(
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
+    # Normalize both current ModelSwitchResult objects and legacy result-shaped
+    # extension values once. The same complete binding is consumed in-place
+    # and retained for a later session rebuild.
+    switched_provider = getattr(result, "provider", "") or result.target_provider
+    switched_requested_provider = (
+        getattr(result, "requested_provider", "") or result.target_provider
+    )
+    switched_request_overrides = getattr(
+        result, "provider_request_overrides", current_provider_request_overrides
+    )
+    switched_credential_pool = getattr(
+        result, "credential_pool", current_credential_pool
+    )
+    switched_command = getattr(result, "command", current_command)
+    switched_args = getattr(result, "args", current_args)
+    switched_max_output_tokens = getattr(
+        result, "max_output_tokens", current_max_output_tokens
+    )
+
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
 
     if agent:
@@ -4977,21 +4996,6 @@ def _apply_model_switch(
             # while treating fields absent from those legacy objects as an
             # instruction to retain the agent's current binding rather than
             # failing the switch or silently clearing route state.
-            switched_provider = getattr(result, "provider", "") or result.target_provider
-            switched_requested_provider = (
-                getattr(result, "requested_provider", "") or result.target_provider
-            )
-            switched_request_overrides = getattr(
-                result, "provider_request_overrides", current_provider_request_overrides
-            )
-            switched_credential_pool = getattr(
-                result, "credential_pool", current_credential_pool
-            )
-            switched_command = getattr(result, "command", current_command)
-            switched_args = getattr(result, "args", current_args)
-            switched_max_output_tokens = getattr(
-                result, "max_output_tokens", current_max_output_tokens
-            )
             agent.switch_model(
                 new_model=result.new_model,
                 new_provider=switched_provider,
@@ -5046,11 +5050,18 @@ def _apply_model_switch(
     if pin_session_override and isinstance(session, dict) and not one_turn:
         session["model_override"] = {
             "model": result.new_model,
-            "provider": result.target_provider,
-            "requested_provider": getattr(result, "requested_provider", result.target_provider),
+            "provider": switched_provider,
+            "requested_provider": switched_requested_provider,
             "base_url": result.base_url,
             "api_key": result.api_key,
             "api_mode": result.api_mode,
+            "provider_request_overrides": copy.deepcopy(
+                switched_request_overrides or {}
+            ),
+            "credential_pool": switched_credential_pool,
+            "command": switched_command,
+            "args": list(switched_args or []),
+            "max_output_tokens": switched_max_output_tokens,
         }
     if persist_global:
         _persist_model_switch(result)
@@ -7020,60 +7031,80 @@ def _make_agent(
     # also pass scalar model/provider/runtime knobs from the persisted DB row.
     if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
-        requested_provider = (
-            model_override.get("requested_provider")
-            or model_override.get("provider")
-            or provider_override
-            or None
-        )
-        override_base_url = model_override.get("base_url")
-        override_api_key = model_override.get("api_key")
-        override_api_mode = model_override.get("api_mode")
-        resolve_kwargs = {}
-        if (
-            "requested_provider" not in model_override
-            and str(requested_provider or "").strip().lower() == "custom"
-        ):
-            # Session rows persisted before the custom-provider identity fix
-            # (see _runtime_model_config) stored the resolved provider
-            # "custom", which _get_named_custom_provider cannot match back to
-            # a named ``providers:`` / ``custom_providers:`` entry — the
-            # rebuild then either raised auth_unavailable, silently resolved
-            # placeholder credentials against the patched-back base_url, or
-            # (when no base_url was stored) routed to the OpenRouter default
-            # with no key, surfacing as "No LLM provider configured". Recover
-            # the entry identity from the persisted base_url, falling back to
-            # the configured provider when the override carries no base_url
-            # (the recurring Desktop/TUI regression vector).
-            from hermes_cli.runtime_provider import canonical_custom_identity
-
-            recovered = canonical_custom_identity(
-                base_url=override_base_url or None, model=model or None
-            )
-            if recovered:
-                requested_provider = recovered
-            if override_base_url:
-                # Failing identity recovery, still hand the base_url to the
-                # direct-alias branch so pool/env credentials resolve for it.
-                resolve_kwargs["explicit_base_url"] = override_base_url
-        resolve_kwargs["requested"] = requested_provider
-        resolve_kwargs["target_model"] = model or None
-        resolution = _resolve_runtime_with_fallback(resolve_kwargs)
-        runtime = resolution.runtime
-        if resolution.used_fallback:
-            if not resolution.selected_model:
-                raise RuntimeError("Auth fallback resolved without a model")
-            model = resolution.selected_model
+        has_requested_provider = "requested_provider" in model_override
+        if has_requested_provider:
+            requested_value = model_override.get("requested_provider")
+            if (
+                not isinstance(requested_value, str)
+                or not requested_value.strip()
+                or requested_value.strip().endswith(":")
+            ):
+                raise ValueError("invalid persisted requested_provider")
+            requested_provider = requested_value.strip()
         else:
-            # The switch already resolved concrete credentials/endpoint; honor
-            # persisted overrides only while using that original runtime. They
-            # must not leak into a different fallback provider/model pair.
-            if override_base_url:
-                runtime["base_url"] = override_base_url
-            if override_api_key:
-                runtime["api_key"] = override_api_key
-            if override_api_mode:
-                runtime["api_mode"] = override_api_mode
+            requested_provider = (
+                model_override.get("provider") or provider_override or None
+            )
+        override_base_url = model_override.get("base_url")
+        override_api_mode = model_override.get("api_mode")
+        complete_live_binding = all(
+            key in model_override
+            for key in (
+                "api_key", "provider_request_overrides", "credential_pool",
+                "command", "args", "max_output_tokens",
+            )
+        )
+        if complete_live_binding:
+            # A live /model switch retained every route-owned field. Rebuild
+            # directly from that immutable snapshot; fresh resolution could
+            # fail or return config-drift route B and must not influence A.
+            runtime = {
+                "provider": model_override.get("provider"),
+                "requested_provider": requested_provider,
+                "base_url": model_override.get("base_url", ""),
+                "api_key": model_override.get("api_key", ""),
+                "api_mode": model_override.get("api_mode", ""),
+                "request_overrides": copy.deepcopy(
+                    model_override.get("provider_request_overrides") or {}
+                ),
+                "credential_pool": model_override.get("credential_pool"),
+                "command": model_override.get("command", ""),
+                "args": list(model_override.get("args") or []),
+                "max_output_tokens": model_override.get("max_output_tokens"),
+            }
+        else:
+            resolve_kwargs = {}
+            if (
+                not has_requested_provider
+                and str(requested_provider or "").strip().lower() == "custom"
+            ):
+                # Session rows persisted before the custom-provider identity
+                # fix stored resolved "custom". Recover the named entry from
+                # safe persisted scalars before fresh resolution.
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                recovered = canonical_custom_identity(
+                    base_url=override_base_url or None, model=model or None
+                )
+                if recovered:
+                    requested_provider = recovered
+                if override_base_url:
+                    resolve_kwargs["explicit_base_url"] = override_base_url
+            resolve_kwargs["requested"] = requested_provider
+            resolve_kwargs["target_model"] = model or None
+            resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+            runtime = resolution.runtime
+            if resolution.used_fallback:
+                if not resolution.selected_model:
+                    raise RuntimeError("Auth fallback resolved without a model")
+                model = resolution.selected_model
+            else:
+                # Durable modern rows contain safe scalars only. The fresh
+                # resolver binding is authoritative after config drift.
+                if override_base_url and not has_requested_provider:
+                    runtime["base_url"] = override_base_url
+                if override_api_mode and not has_requested_provider:
+                    runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -7102,6 +7133,7 @@ def _make_agent(
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
         provider_request_overrides=copy.deepcopy(runtime.get("request_overrides") or {}),
+        max_tokens=runtime.get("max_output_tokens"),
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally
         # independent of tool_progress_mode (which only controls per-tool

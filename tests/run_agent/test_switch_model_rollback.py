@@ -94,6 +94,155 @@ def test_failed_switch_restores_auxiliary_binding_fields():
     )
 
 
+def test_complete_switch_binding_authoritatively_clears_optional_route_fields():
+    agent = _make_agent_openrouter()
+    agent.requested_provider = "openrouter"
+    agent.acp_command = "old-command"
+    agent.acp_args = ["--old"]
+    agent.max_tokens = 100
+    agent._credential_pool = object()
+    agent._credential_pool_entry_id = "old-entry"
+    agent._caller_request_overrides = {}
+    agent._provider_request_overrides = {}
+    agent._request_overrides = {}
+    agent._rebuild_effective_request_overrides()
+    agent._caller_request_overrides = {"caller": True}
+    agent._provider_request_overrides = {"extra_body": {"old": True}}
+    agent._request_overrides = {}
+    agent._rebuild_effective_request_overrides()
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch("agent.credential_pool.load_pool") as load_pool,
+        patch("agent.model_metadata.get_model_context_length", return_value=131072),
+    ):
+        agent.switch_model(
+            new_model="new-model", new_provider="openrouter",
+            requested_provider="openrouter", api_key="new-key",
+            base_url="https://openrouter.ai/api/v1", api_mode="chat_completions",
+            provider_request_overrides={}, credential_pool=None,
+            acp_command=None, acp_args=None, max_tokens=None,
+        )
+
+    assert agent._provider_request_overrides == {}
+    assert agent._credential_pool is None
+    assert agent._credential_pool_entry_id is None
+    assert agent.acp_command is None
+    assert agent.acp_args == []
+    assert agent.max_tokens is None
+    load_pool.assert_not_called()
+
+
+def test_complete_switch_binding_does_not_carry_old_key_to_new_endpoint():
+    """A consumed no-auth result must not reuse the previous route's key."""
+    agent = _make_agent_openrouter()
+    agent.requested_provider = "openrouter"
+    agent._caller_request_overrides = {}
+    agent._provider_request_overrides = {}
+    agent._request_overrides = {}
+    agent._rebuild_effective_request_overrides()
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch("agent.model_metadata.get_model_context_length", return_value=131072),
+    ):
+        agent.switch_model(
+            new_model="new-model", new_provider="custom",
+            requested_provider="synthetic-user", api_key="",
+            base_url="https://user.example/v1", api_mode="chat_completions",
+            provider_request_overrides={}, credential_pool=None,
+            acp_command="", acp_args=[], max_tokens=None,
+        )
+
+    assert agent.api_key == ""
+    assert agent._client_kwargs["api_key"] == ""
+    assert agent._client_kwargs["base_url"] == "https://user.example/v1"
+
+
+def test_complete_switch_binding_keeps_supplied_pool_on_provider_change():
+    agent = _make_agent_openrouter()
+    agent.requested_provider = "openrouter"
+    agent._credential_pool = object()
+    agent._credential_pool_entry_id = "old-entry"
+    agent._caller_request_overrides = {}
+    agent._provider_request_overrides = {}
+    agent._request_overrides = {}
+    agent._rebuild_effective_request_overrides()
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+    supplied_pool = object()
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch("agent.credential_pool.load_pool") as load_pool,
+        patch("agent.model_metadata.get_model_context_length", return_value=131072),
+    ):
+        agent.switch_model(
+            new_model="new-model", new_provider="custom",
+            requested_provider="custom:remote", api_key="new-key",
+            base_url="https://remote.example/v1", api_mode="chat_completions",
+            provider_request_overrides={}, credential_pool=supplied_pool,
+            acp_command="", acp_args=[], max_tokens=None,
+        )
+
+    assert agent._credential_pool is supplied_pool
+    assert agent._credential_pool_entry_id is None
+    load_pool.assert_not_called()
+
+
+def test_legacy_switch_call_omitting_optional_binding_keeps_existing_values():
+    agent = _make_agent_openrouter()
+    agent.requested_provider = "openrouter"
+    agent.acp_command = "old-command"
+    agent.acp_args = ["--old"]
+    agent.max_tokens = 100
+    old_pool = object()
+    agent._credential_pool = old_pool
+    agent._credential_pool_entry_id = "old-entry"
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch("agent.model_metadata.get_model_context_length", return_value=131072),
+    ):
+        agent.switch_model(
+            new_model="new-model", new_provider="openrouter",
+            api_key="new-key", base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent._credential_pool is old_pool
+    assert (agent.acp_command, agent.acp_args, agent.max_tokens) == (
+        "old-command", ["--old"], 100
+    )
+
+
+def test_public_switch_call_omitting_api_key_keeps_existing_client_credential():
+    agent = _make_agent_openrouter()
+    agent._credential_pool = object()
+    agent._credential_pool_entry_id = "old-entry"
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock(return_value=None)
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch("agent.model_metadata.get_model_context_length", return_value=131072),
+    ):
+        agent.switch_model(
+            new_model="new-model", new_provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent.api_key == "or-key-original"
+    assert agent._client_kwargs["api_key"] == "or-key-original"
+
+
 def _make_agent_anthropic():
     """Agent on native anthropic with a sentinel anthropic client."""
     agent = AIAgent.__new__(AIAgent)

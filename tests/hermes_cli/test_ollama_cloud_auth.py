@@ -13,6 +13,8 @@ import os
 from copy import deepcopy
 from unittest.mock import MagicMock
 
+import pytest
+
 from run_agent import AIAgent as RealAIAgent
 
 
@@ -560,3 +562,266 @@ def test_complete_model_switch_result_preserves_runtime_binding():
     assert result.provider == "custom"
     assert result.requested_provider == "custom:remote"
     assert result.provider_request_overrides == {"extra_body": {"route": "remote"}}
+
+
+def _isolate_atomic_switch(monkeypatch, tmp_path, config=None):
+    """Keep selector tests on the real branch logic and off every contact path."""
+    import hermes_cli.model_switch as ms
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    cfg = deepcopy(config or {
+        "model": {"default": "old-model", "provider": "openrouter"},
+        "providers": {}, "custom_providers": [], "moa": {},
+    })
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: deepcopy(cfg))
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: deepcopy(cfg))
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *_a, **_k: {
+            "accepted": True, "persist": True, "recognized": True,
+            "message": None,
+        },
+    )
+    monkeypatch.setattr(ms, "get_model_capabilities", lambda *_a, **_k: None)
+    monkeypatch.setattr(ms, "get_model_info", lambda *_a, **_k: None)
+    monkeypatch.setattr(ms, "list_provider_models", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(ms, "normalize_model_for_provider", lambda model, _p: model)
+    monkeypatch.setattr(ms, "_resolve_named_custom_model_id", lambda model, *_a: model)
+    return ms
+
+
+def _atomic_runtime(requested, *, body=None, pool=None, command="", args=None, cap=None):
+    return {
+        "provider": "custom",
+        "requested_provider": requested,
+        "api_key": "synthetic-new-key",
+        "base_url": "https://new.example/v1",
+        "api_mode": "chat_completions",
+        "request_overrides": deepcopy(body if body is not None else {}),
+        "credential_pool": pool,
+        "command": command,
+        "args": list(args or []),
+        "max_output_tokens": cap,
+    }
+
+
+def test_atomic_switch_resolver_empty_fields_are_authoritative(tmp_path, monkeypatch):
+    ms = _isolate_atomic_switch(monkeypatch, tmp_path)
+    monkeypatch.setattr(ms, "resolve_alias", lambda *_a: ("custom:bodyless", "new-model", ""))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: _atomic_runtime("custom:bodyless"),
+    )
+
+    result = ms.switch_model(
+        "new-model", "openrouter", "old-model",
+        current_requested_provider="openrouter",
+        current_provider_request_overrides={"extra_body": {"old": True}},
+        current_credential_pool="old-pool", current_command="old-command",
+        current_args=["--old"], current_max_output_tokens=123,
+    )
+
+    assert result.success
+    assert result.requested_provider == "custom:bodyless"
+    assert result.provider_request_overrides == {}
+    assert result.command == ""
+    assert result.args == []
+    assert result.credential_pool is None
+    assert result.max_output_tokens is None
+
+
+def test_atomic_switch_user_provider_failure_synthesizes_complete_binding(
+    tmp_path, monkeypatch,
+):
+    config = {"providers": {"synthetic-user": {
+        "name": "Synthetic User", "base_url": "https://user.example/v1",
+        "transport": "openai_chat", "api_key": "synthetic-profile-key",
+        "models": ["new-model"], "extra_body": {"route": "user-owned"},
+    }}}
+    ms = _isolate_atomic_switch(monkeypatch, tmp_path, config)
+    monkeypatch.setattr(ms, "resolve_alias", lambda *_a: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        MagicMock(side_effect=RuntimeError("synthetic resolver failure")),
+    )
+
+    result = ms.switch_model(
+        "new-model", "openrouter", "old-model",
+        explicit_provider="synthetic-user", user_providers=config["providers"],
+        current_requested_provider="openrouter",
+        current_provider_request_overrides={"extra_body": {"old": True}},
+        current_credential_pool="old-pool", current_command="old-command",
+        current_args=["--old"], current_max_output_tokens=123,
+    )
+
+    assert result.success
+    assert (result.provider, result.requested_provider) == (
+        "synthetic-user", "synthetic-user"
+    )
+    assert result.base_url == "https://user.example/v1"
+    assert result.provider_request_overrides == {
+        "extra_body": {"route": "user-owned"}
+    }
+    assert (result.command, result.args, result.credential_pool, result.max_output_tokens) == (
+        "", [], None, None
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [("custom:first", "first-body"), ("custom:second", "second-body")],
+)
+def test_atomic_switch_shared_endpoint_uses_exact_requested_key(
+    requested, expected, tmp_path, monkeypatch,
+):
+    shared = "https://shared.example/v1"
+    config = {"providers": {
+        "first": {"name": "First", "base_url": shared, "transport": "openai_chat",
+                  "api_key": "synthetic-first", "extra_body": {"route": "first-body"}},
+        "second": {"name": "Second", "base_url": shared, "transport": "openai_chat",
+                   "api_key": "synthetic-second", "extra_body": {"route": "second-body"}},
+    }}
+    ms = _isolate_atomic_switch(monkeypatch, tmp_path, config)
+    alias = requested.split(":", 1)[1]
+    monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+        alias: ms.DirectAlias("new-model", requested, shared)
+    })
+    monkeypatch.setattr(ms, "resolve_alias", lambda *_a: (requested, "new-model", alias))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            **_atomic_runtime(requested, body={"extra_body": {"route": "stale"}}),
+            "base_url": "https://old.example/v1",
+        },
+    )
+    from hermes_cli.config import get_compatible_custom_providers
+
+    result = ms.switch_model(
+        alias, "openrouter", "old-model",
+        user_providers=config["providers"],
+        custom_providers=get_compatible_custom_providers(config),
+    )
+
+    assert result.success
+    assert result.base_url == shared
+    assert result.requested_provider == requested
+    assert result.provider_request_overrides == {"extra_body": {"route": expected}}
+
+
+def test_atomic_switch_unchanged_alias_endpoint_keeps_resolved_layer_verbatim(
+    tmp_path, monkeypatch,
+):
+    endpoint = "https://same.example/v1"
+    config = {"providers": {"same": {
+        "name": "Same", "base_url": endpoint, "transport": "openai_chat",
+        "api_key": "synthetic-same", "extra_body": {"route": "configured"},
+    }}}
+    ms = _isolate_atomic_switch(monkeypatch, tmp_path, config)
+    monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+        "same": ms.DirectAlias("new-model", "custom:same", endpoint)
+    })
+    monkeypatch.setattr(
+        ms, "resolve_alias", lambda *_a: ("custom:same", "new-model", "same")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            **_atomic_runtime(
+                "custom:same",
+                body={"extra_body": {"route": "resolved-verbatim"}},
+            ),
+            "base_url": endpoint,
+        },
+    )
+
+    result = ms.switch_model(
+        "same", "openrouter", "old-model",
+        user_providers=config["providers"],
+    )
+
+    assert result.success
+    assert result.base_url == endpoint
+    assert result.provider_request_overrides == {
+        "extra_body": {"route": "resolved-verbatim"}
+    }
+
+
+def test_atomic_switch_ignores_disabled_and_malformed_endpoint_siblings(
+    tmp_path, monkeypatch,
+):
+    endpoint = "https://shared.example/v1"
+    config = {"providers": {
+        "disabled": {
+            "enabled": False, "name": "Disabled", "base_url": endpoint,
+            "api_key": "synthetic-disabled",
+            "extra_body": {"route": "disabled"},
+        },
+        "malformed": "not-a-provider-map",
+        "active": {
+            "name": "Active", "base_url": endpoint,
+            "api_key": "synthetic-active",
+            "extra_body": {"route": "active"},
+        },
+    }}
+    ms = _isolate_atomic_switch(monkeypatch, tmp_path, config)
+    monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+        "active": ms.DirectAlias("new-model", "custom:active", endpoint)
+    })
+    monkeypatch.setattr(
+        ms, "resolve_alias", lambda *_a: ("custom:active", "new-model", "active")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            **_atomic_runtime(
+                "custom:active", body={"extra_body": {"route": "stale"}}
+            ),
+            "base_url": "https://old.example/v1",
+        },
+    )
+    from hermes_cli.config import get_compatible_custom_providers
+
+    result = ms.switch_model(
+        "active", "openrouter", "old-model",
+        user_providers=config["providers"],
+        custom_providers=get_compatible_custom_providers(config),
+    )
+
+    assert result.success
+    assert result.base_url == endpoint
+    assert result.requested_provider == "custom:active"
+    assert result.provider_request_overrides == {
+        "extra_body": {"route": "active"}
+    }
+
+
+@pytest.mark.parametrize("provider", ["custom", "openrouter"])
+def test_atomic_switch_documented_current_binding_fallbacks(
+    provider, tmp_path, monkeypatch,
+):
+    ms = _isolate_atomic_switch(monkeypatch, tmp_path)
+    monkeypatch.setattr(ms, "resolve_alias", lambda *_a: None)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        MagicMock(side_effect=RuntimeError("synthetic same-provider failure")),
+    )
+    result = ms.switch_model(
+        "new-model", provider, "old-model",
+        current_base_url="https://current.example/v1",
+        current_api_key="synthetic-current-key",
+        current_requested_provider="custom:current" if provider == "custom" else provider,
+        current_provider_request_overrides={"extra_body": {"route": "current"}},
+        current_credential_pool="current-pool", current_command="current-command",
+        current_args=["--current"], current_max_output_tokens=2048,
+    )
+    assert result.success
+    assert result.requested_provider == (
+        "custom:current" if provider == "custom" else provider
+    )
+    assert result.provider_request_overrides == {"extra_body": {"route": "current"}}
+    assert (result.command, result.args, result.credential_pool, result.max_output_tokens) == (
+        "current-command", ["--current"], "current-pool", 2048
+    )

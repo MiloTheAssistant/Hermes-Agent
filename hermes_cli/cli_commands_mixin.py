@@ -1060,6 +1060,11 @@ class CLICommandsMixin:
             _cprint("  Already on that session.")
             return
 
+        # A modern persisted route is authoritative and may fail fresh
+        # resolution. Resolve it before flushing/ending the active session or
+        # mutating history, agent, cwd, YOLO, and process-session state.
+        target_runtime = self._preflight_session_model_runtime(session_meta)
+
         old_session_id = self.session_id
         # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
@@ -1172,7 +1177,11 @@ class CLICommandsMixin:
         # Restore the target session's model/provider so a mid-chat /resume
         # doesn't silently revert to the config default. Same contract as a
         # startup --resume (_preload_resumed_session / _init_agent path).
-        self._restore_session_model(session_meta)
+        self._restore_session_model(
+            session_meta,
+            _pre_resolved_runtime=target_runtime,
+            _route_preflighted=True,
+        )
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
