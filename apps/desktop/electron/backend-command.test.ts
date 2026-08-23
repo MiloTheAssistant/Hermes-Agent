@@ -4,12 +4,41 @@ import { test } from 'vitest'
 
 import { dashboardFallbackArgs, serveBackendArgs, sourceDeclaresServe } from './backend-command'
 
-test('serveBackendArgs builds a headless serve invocation', () => {
-  assert.deepEqual(serveBackendArgs(), ['serve', '--host', '127.0.0.1', '--port', '0'])
+test('serveBackendArgs builds a dashboard --no-open invocation that serves the SPA', () => {
+  // The desktop renderer discovers its session token by parsing
+  // `window.__HERMES_SESSION_TOKEN__` out of the served `index.html`
+  // (see `dashboard-token.ts:adoptServedDashboardToken`). The backend the
+  // desktop spawns MUST serve the SPA. `hermes serve` is intentionally
+  // headless (sets HERMES_SERVE_HEADLESS=1 and returns 404 on every non-API
+  // path) and would break boot. `dashboard --no-open` serves the SPA without
+  // popping a browser window.
+  assert.deepEqual(serveBackendArgs(), ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0'])
 })
 
 test('serveBackendArgs pins a profile when provided', () => {
-  assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
+  assert.deepEqual(serveBackendArgs('worker'), [
+    '--profile',
+    'worker',
+    'dashboard',
+    '--no-open',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
+})
+
+test('serveBackendArgs never routes to headless `serve` (regression: v0.20.4 boot failure)', () => {
+  // Invariant, not a snapshot: the desktop must never spawn `hermes serve`,
+  // because `serve` does not serve the SPA. If a future change reintroduces
+  // it, this test fails loudly at the unit level — the symptom in production
+  // is a desktop window that opens and immediately fails WebSocket auth.
+  for (const profile of [undefined, 'worker']) {
+    assert.ok(
+      !serveBackendArgs(profile).includes('serve'),
+      `serveBackendArgs(${JSON.stringify(profile)}) must not contain 'serve': ${JSON.stringify(serveBackendArgs(profile))}`
+    )
+  }
 })
 
 test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -m prefix', () => {

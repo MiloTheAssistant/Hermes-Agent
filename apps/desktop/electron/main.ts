@@ -2236,11 +2236,15 @@ function backendSupportsServe(backend) {
   return supported
 }
 
-// Given a resolved backend whose args target `serve`, return the args the
-// runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes.
+// Given a resolved backend whose args target `serve` (the legacy default),
+// return the args the runtime actually understands: rewritten to
+// `dashboard --no-open` so the SPA is served. The desktop renderer's session-
+// token discovery reads the injected token from `index.html`, so it must never
+// spawn a headless `serve` backend. `serveBackendArgs()` already returns
+// `dashboard --no-open` directly, so this rewrite is only here for any caller
+// that pre-composed argv with `serve` and we need a safety net.
 function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
+  return dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
